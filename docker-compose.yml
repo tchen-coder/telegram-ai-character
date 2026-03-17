@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: telegram-ai-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: telegram_ai_character
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - /Volumes/extradisk/mysqldata:/var/lib/mysql
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ppassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - telegram-ai-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-ai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - /Volumes/extradisk/redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - telegram-ai-network
+
+  bot:
+    build: .
+    container_name: telegram-ai-bot
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      XAI_API_KEY: ${XAI_API_KEY}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_MODEL: ${LLM_MODEL}
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: mysql://root:password@mysql:3306/telegram_ai_character
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - telegram-ai-network
+    links:
+      - mysql
+      - redis
+
+networks:
+  telegram-ai-network:
+    driver: bridge
