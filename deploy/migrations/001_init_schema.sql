@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS `roles` (
 CREATE TABLE IF NOT EXISTS `role_relationship_prompts` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `role_id` INT NOT NULL,
-  `relationship` INT NOT NULL DEFAULT 3,
+  `relationship` INT NOT NULL DEFAULT 1,
   `prompt_text` TEXT NOT NULL,
   `is_active` BOOLEAN DEFAULT TRUE,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,

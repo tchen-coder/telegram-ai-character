@@ -23,17 +23,9 @@ class DispatchLayer:
         if level == 1:
             return [normalized]
 
-        # level 2: 按句号等强分隔符切分；超长句仅在单句内部补切，避免退化成过碎片段。
-        strong_parts = self._split_by_delimiters(normalized, r"([。！？!?；;\n])")
-        segments: list[str] = []
-        for part in strong_parts:
-            text = (part or "").strip()
-            if not text:
-                continue
-            if len(text) <= self.segment_char_limit:
-                segments.append(text)
-                continue
-            segments.extend(self._split_by_length(text, self.segment_char_limit))
+        # level 2: 默认严格按句末标点切分，不再因长度二次打碎句子。
+        strong_parts = self._split_by_delimiters(normalized, r"([。！？!?])")
+        segments = self._merge_suffix_segments(strong_parts)
 
         if not segments:
             return [normalized]
@@ -59,29 +51,34 @@ class DispatchLayer:
             segments.append(current.strip())
         return segments
 
-    def _split_by_length(self, content: str, limit: int) -> list[str]:
-        text = (content or "").strip()
-        if not text:
-            return []
-        if len(text) <= limit:
-            return [text]
+    def _merge_suffix_segments(self, segments: list[str]) -> list[str]:
+        merged: list[str] = []
+        closing_chars = ")]）】》」』\"'”’"
+        closing_only_pattern = re.compile(rf"^[{re.escape(closing_chars)}\s]+$")
 
-        segments: list[str] = []
-        start = 0
-        while start < len(text):
-            end = min(start + limit, len(text))
-            if end < len(text):
-                split_at = max(
-                    text.rfind(mark, start, end)
-                    for mark in ("，", "、", ",", "：", ":", " ")
-                )
-                if split_at > start + 6:
-                    end = split_at + 1
-            segment = text[start:end].strip()
-            if segment:
-                segments.append(segment)
-            start = end
-        return segments
+        for part in segments:
+            text = (part or "").strip()
+            if not text:
+                continue
+
+            prefix = ""
+            while text and text[0] in closing_chars:
+                prefix += text[0]
+                text = text[1:].lstrip()
+
+            if prefix and merged:
+                merged[-1] += prefix
+
+            if not text:
+                continue
+
+            if merged and closing_only_pattern.fullmatch(text):
+                merged[-1] += text
+                continue
+
+            merged.append(text)
+
+        return merged
     
     def calc_delay(self, text: str, factor: float) -> float:
         """计算打字延迟（毫秒）"""

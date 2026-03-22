@@ -111,6 +111,18 @@ class TestDispatchLayer:
         text = "你好啊。今天天气真不错！我们出去玩吧？"
         segments = dispatch_layer.split_message(text, 2)
         assert segments == ["你好啊。", "今天天气真不错！", "我们出去玩吧？"]
+
+    def test_split_level_two_does_not_break_long_sentence_by_comma(self):
+        from app.dispatch import dispatch_layer
+        text = "我微微点头，抬手扶住栏杆，裙摆被风吹得轻轻晃动，没有再躲开你的目光。"
+        segments = dispatch_layer.split_message(text, 2)
+        assert segments == [text]
+
+    def test_split_level_two_merges_orphan_closing_bracket(self):
+        from app.dispatch import dispatch_layer
+        text = "（表面上我还是冷着脸。)\n平时都用什么器材？"
+        segments = dispatch_layer.split_message(text, 2)
+        assert segments == ["（表面上我还是冷着脸。)", "平时都用什么器材？"]
     
     def test_delay_calculation(self):
         from app.dispatch import dispatch_layer

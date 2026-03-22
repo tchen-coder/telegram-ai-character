@@ -144,6 +144,14 @@ class WeaviateRAGService:
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._list_conversation_memory_sync, user_id, role_id, limit)
 
+    async def delete_conversation_memory(
+        self,
+        *,
+        user_id: str,
+        role_id: int,
+    ) -> int:
+        return await asyncio.to_thread(self._delete_conversation_memory_sync, user_id, role_id)
+
     def close(self) -> None:
         with self._lock:
             if self._client is not None:
@@ -463,6 +471,38 @@ class WeaviateRAGService:
             sort=[{"path": ["created_at"], "order": "asc"}],
         )
         return self._serialize_objects(objects)
+
+    def _delete_conversation_memory_sync(self, user_id: str, role_id: int) -> int:
+        self._ensure_ready_sync()
+        settings = get_settings()
+        objects = self._list_collection(
+            class_name=settings.weaviate_memory_collection,
+            where={
+                "operator": "And",
+                "operands": [
+                    {"path": ["user_id"], "operator": "Equal", "valueText": user_id},
+                    {"path": ["role_id"], "operator": "Equal", "valueInt": role_id},
+                ],
+            },
+            limit=10000,
+            fields=["chat_history_id", "user_id", "role_id"],
+        )
+
+        deleted = 0
+        for item in objects:
+            object_id = (item.get("_additional") or {}).get("id")
+            if not object_id:
+                continue
+            self._request("DELETE", f"/v1/objects/{settings.weaviate_memory_collection}/{object_id}")
+            deleted += 1
+
+        logger.info(
+            "Weaviate conversation memory deleted: user=%s role_id=%s count=%s",
+            user_id,
+            role_id,
+            deleted,
+        )
+        return deleted
 
     @staticmethod
     def _serialize_objects(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:

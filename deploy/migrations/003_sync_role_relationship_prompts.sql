@@ -3,7 +3,7 @@
 -- 1. 创建 role_relationship_prompts 表
 -- 2. 将现有 roles 中的提示词统一迁移到 1/2/3 三档
 -- 3. 让旧字段 system_prompt_friend/system_prompt_partner/system_prompt_lover 保持一致
--- 4. 将 user_roles.relationship 默认值调整为 3
+-- 4. 将 user_roles.relationship 默认值调整为 1
 
 CREATE TABLE IF NOT EXISTS `role_relationship_prompts` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS `role_relationship_prompts` (
   INDEX `idx_role_relationship_prompt` (`role_id`, `relationship`, `is_active`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-ALTER TABLE `user_roles` MODIFY COLUMN `relationship` INT NOT NULL DEFAULT 3;
+ALTER TABLE `user_roles` MODIFY COLUMN `relationship` INT NOT NULL DEFAULT 1;
 
 UPDATE `roles`
 SET

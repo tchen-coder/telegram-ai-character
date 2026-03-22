@@ -16,11 +16,14 @@ from app.api.services import (
     admin_get_user_history,
     admin_get_user_overview,
     admin_get_user_rag,
+    admin_get_role_prompts,
     admin_list_role_images,
     admin_list_roles,
     admin_update_role_image,
+    admin_update_role_prompts,
     admin_update_role,
     get_conversation_history,
+    delete_user_role,
     list_roles,
     list_user_roles,
     select_role,
@@ -84,6 +87,15 @@ class BotAPIHandler(BaseHTTPRequestHandler):
                 return
             role_id = parse_optional_int(get_query_param(self.path, "role_id"))
             self._run_and_write(admin_list_role_images(role_id))
+            return
+
+        if parsed.path == "/api/admin/role-prompts":
+            auth_error = authorize_admin(self.headers)
+            if auth_error:
+                self._write_json(*auth_error)
+                return
+            role_id = parse_optional_int(get_query_param(self.path, "role_id"))
+            self._run_and_write(admin_get_role_prompts(role_id))
             return
 
         if parsed.path == "/api/admin/users/overview":
@@ -194,6 +206,24 @@ class BotAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/api/admin/role-prompts/update":
+            auth_error = authorize_admin(self.headers)
+            if auth_error:
+                self._write_json(*auth_error)
+                return
+
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            payload, error_response = parse_json_body(raw_body)
+            if error_response:
+                self._write_json(*error_response)
+                return
+
+            self._run_and_write(
+                admin_update_role_prompts(parse_optional_int(payload.get("role_id")), payload)
+            )
+            return
+
         if parsed.path == "/api/roles/select":
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -223,6 +253,22 @@ class BotAPIHandler(BaseHTTPRequestHandler):
                     payload.get("user_id"),
                     payload.get("content"),
                     payload.get("user_name"),
+                    parse_optional_int(payload.get("role_id")),
+                )
+            )
+            return
+
+        if parsed.path == "/api/myroles/delete":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            payload, error_response = parse_json_body(raw_body)
+            if error_response:
+                self._write_json(*error_response)
+                return
+
+            self._run_and_write(
+                delete_user_role(
+                    payload.get("user_id"),
                     parse_optional_int(payload.get("role_id")),
                 )
             )

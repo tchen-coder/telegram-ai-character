@@ -3,12 +3,11 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.repositories import UserRoleRepository
 from app.decision import decision_engine
 from app.generation import generation_layer
 from app.prompt_agent import prompt_agent
 from app.rag import rag_service
-from app.relationship_prompts import DEFAULT_RELATIONSHIP
+from app.relationship.service import RelationshipService
 from app.services.chat_service import ChatService
 from app.services.role_service import RoleService
 from app.state_machine import state_machine
@@ -24,7 +23,7 @@ class ConversationService:
         self.session = session
         self.role_service = RoleService(session)
         self.chat_service = ChatService(session)
-        self.user_role_repo = UserRoleRepository(session)
+        self.relationship_service = RelationshipService(session)
 
     async def chat(
         self,
@@ -38,12 +37,6 @@ class ConversationService:
         if not current_role:
             raise ValueError("请先选择一个角色。")
 
-        relationship = await self._get_relationship_level(user_id, current_role.id)
-        current_role.system_prompt = self.role_service.resolve_role_prompt(
-            current_role,
-            relationship,
-        )
-
         emotion = await understanding_layer.analyze(user_text)
         user_message = await self.chat_service.save_user_message(
             user_id=user_id,
@@ -51,12 +44,21 @@ class ConversationService:
             content=user_text,
             emotion_data=emotion.model_dump(),
         )
-        await self._index_message_for_rag(user_message)
         conversation_history = await self.chat_service.get_latest_messages(
             user_id=user_id,
             role_id=current_role.id,
-            limit=12,
+            limit=30,
         )
+        relationship_context = await self.relationship_service.resolve_generation_context(
+            role=current_role,
+            user_id=user_id,
+            user_text=user_text,
+            emotion=emotion,
+            recent_messages=conversation_history,
+            trigger_message_id=user_message.id,
+        )
+        current_role.system_prompt = relationship_context.prompt_text
+        await self._index_message_for_rag(user_message)
         await self._ensure_role_knowledge(current_role)
         rag_context = await rag_service.retrieve_context(
             role=current_role,
@@ -65,7 +67,7 @@ class ConversationService:
         )
 
         state = await state_machine.get_state(user_id, current_role.id, user_name)
-        state.relationship_level = relationship
+        state.relationship_level = relationship_context.relationship
         decision = decision_engine.decide(state, emotion)
         system_prompt, user_prompt = prompt_agent.build_prompt(
             current_role,
@@ -96,9 +98,13 @@ class ConversationService:
             await self._index_message_for_rag(assistant_message)
         await state_machine.update_after_interaction(state, decision.mood_delta)
         logger.info(
-            "RAG final response: role=%s user=%s response=%r",
+            "RAG final response: role=%s user=%s relationship=%s rv=%s delta=%s pending=%s response=%r",
             current_role.role_name,
             user_id,
+            relationship_context.relationship,
+            relationship_context.current_rv,
+            relationship_context.last_delta,
+            relationship_context.pending_delta,
             response_text,
         )
 
@@ -106,6 +112,8 @@ class ConversationService:
 
         return {
             "role": current_role,
+            "relationship": relationship_context.relationship,
+            "relationship_label": relationship_context.relationship_label,
             "emotion": emotion,
             "decision": decision,
             "assistant_message": assistant_message,
@@ -120,16 +128,6 @@ class ConversationService:
                 return role
             return None
         return await self.role_service.get_user_current_role(user_id)
-
-    async def _get_relationship_level(self, user_id: str, role_id: int) -> int:
-        user_role = await self.user_role_repo.get_user_role(user_id, role_id)
-        if not user_role or not user_role.relationship:
-            return DEFAULT_RELATIONSHIP
-        return int(user_role.relationship)
-
-    async def _sync_relationship_level(self, user_id: str, role_id: int, relationship: int) -> None:
-        # 暂停将运行态 relationship_level 回写到 MySQL。
-        return None
 
     def _should_use_local_fallback(self, exc: Exception) -> bool:
         exc_text = str(exc)

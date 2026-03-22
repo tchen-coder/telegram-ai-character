@@ -1,7 +1,7 @@
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, desc, asc
+from sqlalchemy import delete, select, and_, desc, asc
 
 from app.database.models import ChatHistory, MessageType
 from app.database.repositories.base import BaseRepository
@@ -91,3 +91,11 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
             .limit(limit)
         )
         return result.scalars().all()
+
+    async def delete_user_role_history(self, user_id: str, role_id: int) -> None:
+        await self.session.execute(
+            delete(ChatHistory).where(
+                and_(ChatHistory.user_id == user_id, ChatHistory.role_id == role_id)
+            )
+        )
+        await self.session.flush()

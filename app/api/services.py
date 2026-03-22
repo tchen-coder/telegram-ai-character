@@ -16,7 +16,9 @@ from app.config import get_settings
 from app.database.connection import get_db_manager
 from app.rag import rag_service
 from app.services import ChatService, ConversationService, RoleService
+from app.state_machine import state_machine
 from app.telegram_request import ConfigurableHTTPXRequest
+from app.relationship_prompts import normalize_relationship, relationship_label
 
 
 def _extract_latest_role_reply(messages: list) -> Optional[str]:
@@ -104,6 +106,55 @@ async def list_user_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
             ],
             "current_role_id": current_role.id if current_role else None,
         },
+    )
+
+
+async def delete_user_role(
+    user_id: Optional[str],
+    role_id: Optional[int],
+) -> tuple[HTTPStatus, bytes]:
+    if not user_id:
+        return build_json_response(
+            ok=False,
+            message="缺少 user_id",
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    if not role_id:
+        return build_json_response(
+            ok=False,
+            message="缺少 role_id",
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    db_manager = get_db_manager()
+    async with db_manager.async_session() as session:
+        role_service = RoleService(session)
+        role = await role_service.get_role(role_id)
+        if not role or not role.is_active:
+            return build_json_response(
+                ok=False,
+                message="角色不存在或已下线",
+                status=HTTPStatus.NOT_FOUND,
+            )
+
+        deleted = await role_service.reset_user_role(user_id, role_id)
+        if not deleted:
+            return build_json_response(
+                ok=False,
+                message="当前没有该角色的聊天记录",
+                status=HTTPStatus.NOT_FOUND,
+            )
+
+    try:
+        await state_machine.clear_state(user_id, role_id)
+    except Exception:
+        pass
+
+    return build_json_response(
+        ok=True,
+        message="角色聊天记录已删除",
+        data={"role_id": role_id},
     )
 
 
@@ -225,6 +276,9 @@ async def get_conversation_history(
                 status=HTTPStatus.NOT_FOUND,
             )
 
+        current_relationship = await role_service.get_user_role_relationship(user_id, role_id)
+        role.relationship = normalize_relationship(current_relationship)
+        role.relationship_label = relationship_label(role.relationship)
         messages = await chat_service.get_conversation_history(user_id=user_id, role_id=role_id, limit=60)
         opening_message = None
         has_opening_image = any(
@@ -299,7 +353,17 @@ async def send_chat_message(
         ok=True,
         message="回复生成成功",
         data={
-            "role": serialize_role(result["role"]),
+            "role": serialize_role(
+                result["role"].model_copy(
+                    update={
+                        "relationship": normalize_relationship(result.get("relationship", 1)),
+                        "relationship_label": result.get("relationship_label")
+                        or relationship_label(result.get("relationship", 1)),
+                    }
+                )
+                if hasattr(result["role"], "model_copy")
+                else result["role"]
+            ),
             "user_message": {
                 "message_type": "user",
                 "content": normalized_content,
@@ -501,6 +565,122 @@ async def admin_update_role(role_id: Optional[int], payload: dict) -> tuple[HTTP
         ok=True,
         message="角色更新成功",
         data={"role": serialize_role(updated)},
+    )
+
+
+async def admin_get_role_prompts(role_id: Optional[int]) -> tuple[HTTPStatus, bytes]:
+    if not role_id:
+        return build_json_response(
+            ok=False,
+            message="缺少 role_id",
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    db_manager = get_db_manager()
+    async with db_manager.async_session() as session:
+        role_service = RoleService(session)
+        role = await role_service.get_role(role_id)
+        if not role:
+            return build_json_response(
+                ok=False,
+                message="角色不存在",
+                status=HTTPStatus.NOT_FOUND,
+            )
+        payload_role = serialize_role(role)
+
+    return build_json_response(
+        ok=True,
+        message="角色提示词获取成功",
+        data={
+            "role_id": role_id,
+            "relationship_prompts": payload_role.get("relationship_prompts", []),
+            "system_prompt_friend": payload_role.get("system_prompt_friend", ""),
+            "system_prompt_partner": payload_role.get("system_prompt_partner", ""),
+            "system_prompt_lover": payload_role.get("system_prompt_lover", ""),
+        },
+    )
+
+
+async def admin_update_role_prompts(role_id: Optional[int], payload: dict) -> tuple[HTTPStatus, bytes]:
+    if not role_id:
+        return build_json_response(
+            ok=False,
+            message="缺少 role_id",
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    raw_relationship_prompts = payload.get("relationship_prompts")
+    relationship_prompts = []
+    if isinstance(raw_relationship_prompts, list):
+        for item in raw_relationship_prompts:
+            if not isinstance(item, dict):
+                continue
+            relationship_prompts.append(
+                {
+                    "relationship": parse_optional_int(item.get("relationship")) or 1,
+                    "prompt_text": (item.get("prompt_text") or "").strip(),
+                    "is_active": True if item.get("is_active") is None else bool(item.get("is_active")),
+                }
+            )
+
+    normalized_prompts = RoleService.normalize_relationship_prompts(
+        relationship_prompts=relationship_prompts,
+        system_prompt=(payload.get("system_prompt") or "").strip(),
+        legacy_friend=(payload.get("system_prompt_friend") or "").strip(),
+        legacy_partner=(payload.get("system_prompt_partner") or "").strip(),
+        legacy_lover=(payload.get("system_prompt_lover") or "").strip(),
+    )
+    friend_prompt = next(
+        (
+            item["prompt_text"]
+            for item in normalized_prompts
+            if int(item.get("relationship", 0)) == 1 and str(item.get("prompt_text", "")).strip()
+        ),
+        "",
+    )
+    if not friend_prompt:
+        return build_json_response(
+            ok=False,
+            message="朋友提示词不能为空",
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    db_manager = get_db_manager()
+    async with db_manager.async_session() as session:
+        role_service = RoleService(session)
+        role = await role_service.get_role(role_id)
+        if not role:
+            return build_json_response(
+                ok=False,
+                message="角色不存在",
+                status=HTTPStatus.NOT_FOUND,
+            )
+
+        updated = await role_service.update_role(
+            role_id,
+            role_name=role.role_name,
+            system_prompt=friend_prompt,
+            scenario=role.scenario,
+            greeting_message=role.greeting_message,
+            avatar_url=role.avatar_url,
+            tags=list(role.tags or []),
+            relationship_prompts=normalized_prompts,
+            is_active=bool(role.is_active),
+        )
+        all_roles = await role_service.get_all_active_roles()
+
+    await rag_service.rebuild_role_knowledge(all_roles)
+    payload_role = serialize_role(updated)
+    return build_json_response(
+        ok=True,
+        message="提示词更新成功",
+        data={
+            "role_id": role_id,
+            "relationship_prompts": payload_role.get("relationship_prompts", []),
+            "system_prompt_friend": payload_role.get("system_prompt_friend", ""),
+            "system_prompt_partner": payload_role.get("system_prompt_partner", ""),
+            "system_prompt_lover": payload_role.get("system_prompt_lover", ""),
+        },
     )
 
 

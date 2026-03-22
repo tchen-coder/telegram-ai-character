@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, JSON, ForeignKey, Index, UniqueConstraint, Enum
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, JSON, ForeignKey, Index, UniqueConstraint, Enum
 from sqlalchemy.ext.declarative import declarative_base
 import enum
 
@@ -59,6 +59,37 @@ class RoleRelationshipPrompt(Base):
         )
 
 
+class RoleRelationshipConfig(Base):
+    """角色关系系统配置表"""
+    __tablename__ = "role_relationship_configs"
+    __table_args__ = (
+        UniqueConstraint("role_id", name="uk_role_relationship_config"),
+        Index("idx_role_relationship_config", "role_id"),
+        {
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_unicode_ci",
+        },
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    initial_rv = Column(Integer, nullable=False, default=15)
+    update_frequency = Column(Integer, nullable=False, default=1)
+    max_negative_delta = Column(Integer, nullable=False, default=3)
+    max_positive_delta = Column(Integer, nullable=False, default=15)
+    recent_window_size = Column(Integer, nullable=False, default=12)
+    stage_names = Column(JSON, nullable=True)
+    stage_floor_rv = Column(JSON, nullable=True)
+    stage_thresholds = Column(JSON, nullable=True)
+    paid_boost_enabled = Column(Boolean, default=False)
+    meta_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<RoleRelationshipConfig(role_id={self.role_id})>"
+
+
 class RoleImage(Base):
     """角色图片资源表"""
     __tablename__ = "role_images"
@@ -96,7 +127,7 @@ class UserRole(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String(50), nullable=False)
     role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
-    relationship = Column(Integer, nullable=False, default=3)
+    relationship = Column(Integer, nullable=False, default=1)
     is_current = Column(Boolean, default=False)
     first_interaction_at = Column(DateTime, nullable=True)
     last_interaction_at = Column(DateTime, nullable=True)
@@ -113,6 +144,83 @@ class UserRole(Base):
 
     def __repr__(self):
         return f"<UserRole(user_id={self.user_id}, role_id={self.role_id}, is_current={self.is_current})>"
+
+
+class UserRoleRelationshipState(Base):
+    """用户-角色关系状态表"""
+    __tablename__ = "user_role_relationship_states"
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_id", name="uk_user_role_relationship_state"),
+        Index("idx_user_role_relationship_state", "user_id", "role_id", "current_stage"),
+        {
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_unicode_ci",
+        },
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    current_rv = Column(Integer, nullable=False, default=15)
+    current_stage = Column(Integer, nullable=False, default=1)
+    max_unlocked_stage = Column(Integer, nullable=False, default=1)
+    last_rv = Column(Integer, nullable=False, default=15)
+    last_delta = Column(Integer, nullable=False, default=0)
+    last_update_at_turn = Column(Integer, nullable=False, default=0)
+    turn_count = Column(Integer, nullable=False, default=0)
+    update_frequency = Column(Integer, nullable=False, default=1)
+    pending_delta_accumulator = Column(Integer, nullable=False, default=0)
+    paid_boost_rv = Column(Integer, nullable=False, default=0)
+    paid_boost_applied = Column(Boolean, default=False)
+    paid_boost_source = Column(String(50), nullable=True)
+    emotion_summary_text = Column(Text, nullable=True)
+    emotion_summary_updated_turn = Column(Integer, nullable=False, default=0)
+    emotion_adjustment_factor = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return (
+            f"<UserRoleRelationshipState(user_id={self.user_id}, role_id={self.role_id}, "
+            f"stage={self.current_stage}, rv={self.current_rv})>"
+        )
+
+
+class UserRoleRelationshipEvent(Base):
+    """用户-角色关系事件日志表"""
+    __tablename__ = "user_role_relationship_events"
+    __table_args__ = (
+        Index("idx_user_role_relationship_event", "user_id", "role_id", "turn_index"),
+        Index("idx_relationship_event_message", "trigger_message_id"),
+        {
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_unicode_ci",
+        },
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), nullable=False)
+    role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    trigger_message_id = Column(Integer, ForeignKey("chat_history.id"), nullable=True)
+    turn_index = Column(Integer, nullable=False, default=0)
+    triggered_update = Column(Boolean, default=False)
+    delta = Column(Integer, nullable=False, default=0)
+    pending_before = Column(Integer, nullable=False, default=0)
+    applied_delta = Column(Integer, nullable=False, default=0)
+    rv_before = Column(Integer, nullable=False, default=15)
+    rv_after = Column(Integer, nullable=False, default=15)
+    stage_before = Column(Integer, nullable=False, default=1)
+    stage_after = Column(Integer, nullable=False, default=1)
+    scoring_source = Column(String(50), nullable=True)
+    reason_text = Column(Text, nullable=True)
+    payload_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return (
+            f"<UserRoleRelationshipEvent(user_id={self.user_id}, role_id={self.role_id}, "
+            f"turn={self.turn_index}, delta={self.delta})>"
+        )
 
 
 class MessageType(str, enum.Enum):

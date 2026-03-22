@@ -54,10 +54,14 @@ def serialize_role(role: Any) -> Dict[str, Any]:
         item["relationship"]: item["prompt_text"] for item in serialized_relationship_prompts
     }
 
+    current_relationship = normalize_relationship(getattr(role, "relationship", 1))
     return {
         "id": role.id,
         "name": role.role_name,
         "description": role.scenario or "暂无描述",
+        "relationship": current_relationship,
+        "relationship_label": getattr(role, "relationship_label", None)
+        or relationship_label(current_relationship),
         "system_prompt": getattr(role, "system_prompt", "") or "",
         "system_prompt_friend": relationship_prompt_map.get(
             1,

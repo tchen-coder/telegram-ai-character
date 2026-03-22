@@ -1,15 +1,26 @@
 from typing import List, Optional
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import Role, RoleImage, RoleRelationshipPrompt
+from app.database.models import (
+    ChatHistory,
+    Role,
+    RoleImage,
+    RoleRelationshipPrompt,
+    UserRoleRelationshipEvent,
+    UserRoleRelationshipState,
+)
 from app.database.repositories import (
     RoleImageRepository,
     RoleRelationshipPromptRepository,
     RoleRepository,
     UserRoleRepository,
+    UserRoleRelationshipStateRepository,
 )
 from app.models import RoleImageInfo, RoleInfo, RoleRelationshipPromptInfo
+from app.rag import rag_service
+from app.relationship.prompting import select_relationship_prompt
 from app.relationship_prompts import (
     DEFAULT_RELATIONSHIP,
     normalize_relationship,
@@ -28,6 +39,19 @@ class RoleService:
         self.role_image_repo = RoleImageRepository(session)
         self.role_relationship_prompt_repo = RoleRelationshipPromptRepository(session)
         self.user_role_repo = UserRoleRepository(session)
+        self.user_role_relationship_state_repo = UserRoleRelationshipStateRepository(session)
+
+    async def _resolve_user_relationship(
+        self,
+        *,
+        user_id: str,
+        role_id: int,
+        fallback: Optional[int] = None,
+    ) -> int:
+        state = await self.user_role_relationship_state_repo.get_by_user_and_role(user_id, role_id)
+        if state:
+            return normalize_relationship(getattr(state, "current_stage", None))
+        return normalize_relationship(fallback)
 
     @staticmethod
     def _normalize_tags(tags: Optional[list[str]]) -> list[str]:
@@ -137,28 +161,7 @@ class RoleService:
 
     @classmethod
     def resolve_role_prompt(cls, role: RoleInfo, relationship: Optional[int]) -> str:
-        relationship = normalize_relationship(relationship)
-        prompt_lookup = {
-            normalize_relationship(item.relationship): cls._clean_prompt_text(item.prompt_text)
-            for item in getattr(role, "relationship_prompts", []) or []
-            if getattr(item, "is_active", True) and cls._clean_prompt_text(item.prompt_text)
-        }
-        if prompt_lookup.get(relationship):
-            return prompt_lookup[relationship]
-        if prompt_lookup.get(DEFAULT_RELATIONSHIP):
-            return prompt_lookup[DEFAULT_RELATIONSHIP]
-
-        legacy_lookup = {
-            1: cls._clean_prompt_text(getattr(role, "system_prompt_friend", None))
-            or cls._clean_prompt_text(getattr(role, "system_prompt", None)),
-            2: cls._clean_prompt_text(getattr(role, "system_prompt_partner", None)),
-            3: cls._clean_prompt_text(getattr(role, "system_prompt_lover", None)),
-        }
-        return (
-            legacy_lookup.get(relationship)
-            or legacy_lookup.get(DEFAULT_RELATIONSHIP)
-            or cls._clean_prompt_text(getattr(role, "system_prompt", None))
-        )
+        return select_relationship_prompt(role, relationship)
 
     async def _build_role_info(self, role: Role) -> RoleInfo:
         images = await self.role_image_repo.list_by_role(role.id)
@@ -225,6 +228,8 @@ class RoleService:
             avatar_url=role.avatar_url,
             opening_image_url=opening_image_url or role.avatar_url,
             tags=self._normalize_tags(getattr(role, "tags", None)),
+            relationship=DEFAULT_RELATIONSHIP,
+            relationship_label=relationship_label(DEFAULT_RELATIONSHIP),
             relationship_prompts=relationship_prompt_infos,
             role_images=role_images,
             is_active=role.is_active,
@@ -300,15 +305,29 @@ class RoleService:
         if user_role:
             role = await self.role_repo.get_by_id(user_role.role_id)
             if role:
-                return await self._build_role_info(role)
+                role_info = await self._build_role_info(role)
+                role_info.relationship = await self._resolve_user_relationship(
+                    user_id=user_id,
+                    role_id=user_role.role_id,
+                    fallback=user_role.relationship,
+                )
+                role_info.relationship_label = relationship_label(role_info.relationship)
+                return role_info
         return None
 
     async def set_user_role(self, user_id: str, role_id: int) -> RoleInfo:
         """设置用户的当前角色"""
-        await self.user_role_repo.set_current_role(user_id, role_id)
+        user_role = await self.user_role_repo.set_current_role(user_id, role_id)
         await self.session.commit()
         role = await self.role_repo.get_by_id(role_id)
-        return await self._build_role_info(role)
+        role_info = await self._build_role_info(role)
+        role_info.relationship = await self._resolve_user_relationship(
+            user_id=user_id,
+            role_id=role_id,
+            fallback=user_role.relationship,
+        )
+        role_info.relationship_label = relationship_label(role_info.relationship)
+        return role_info
 
     async def get_user_roles(self, user_id: str) -> List[RoleInfo]:
         """获取用户的所有角色"""
@@ -317,8 +336,58 @@ class RoleService:
         for user_role in user_roles:
             role = await self.role_repo.get_by_id(user_role.role_id)
             if role:
-                roles.append(await self._build_role_info(role))
+                role_info = await self._build_role_info(role)
+                role_info.relationship = await self._resolve_user_relationship(
+                    user_id=user_id,
+                    role_id=user_role.role_id,
+                    fallback=user_role.relationship,
+                )
+                role_info.relationship_label = relationship_label(role_info.relationship)
+                roles.append(role_info)
         return roles
+
+    async def get_user_role_relationship(self, user_id: str, role_id: int) -> int:
+        user_role = await self.user_role_repo.get_user_role(user_id, role_id)
+        if not user_role:
+            return DEFAULT_RELATIONSHIP
+        return await self._resolve_user_relationship(
+            user_id=user_id,
+            role_id=role_id,
+            fallback=user_role.relationship,
+        )
+
+    async def reset_user_role(self, user_id: str, role_id: int) -> bool:
+        user_role = await self.user_role_repo.get_user_role(user_id, role_id)
+        if not user_role:
+            return False
+
+        await self.session.execute(
+            delete(UserRoleRelationshipEvent).where(
+                UserRoleRelationshipEvent.user_id == user_id,
+                UserRoleRelationshipEvent.role_id == role_id,
+            )
+        )
+        await self.session.execute(
+            delete(UserRoleRelationshipState).where(
+                UserRoleRelationshipState.user_id == user_id,
+                UserRoleRelationshipState.role_id == role_id,
+            )
+        )
+        await self.session.execute(
+            delete(ChatHistory).where(
+                ChatHistory.user_id == user_id,
+                ChatHistory.role_id == role_id,
+            )
+        )
+        await self.user_role_repo.delete_user_role(user_id, role_id)
+        await self.session.commit()
+
+        try:
+            await rag_service.delete_conversation_memory(user_id=user_id, role_id=role_id)
+        except Exception:
+            pass
+
+        return True
 
     async def create_role(
         self,

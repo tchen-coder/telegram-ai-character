@@ -60,4 +60,9 @@ class StateMachine:
         await self.save_state(state)
         return state
 
+    async def clear_state(self, user_id: str, role_id: int) -> None:
+        if not self.redis:
+            return
+        await self.redis.delete(self._key(user_id, role_id))
+
 state_machine = StateMachine()

@@ -36,7 +36,7 @@ class UserState(BaseModel):
     user_id: str
     role_id: int
     user_name: Optional[str] = None
-    relationship_level: int = DEFAULT_RELATIONSHIP  # 1=朋友, 2=恋人, 3=灵魂伴侣
+    relationship_level: int = DEFAULT_RELATIONSHIP  # 1=朋友, 2=恋人, 3=爱人
     character_mood: float = 0.1  # 0-1
     interaction_count: int = 0
     last_interaction: Optional[datetime] = None
@@ -75,6 +75,8 @@ class RoleInfo(BaseModel):
     avatar_url: Optional[str] = None
     opening_image_url: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    relationship: int = DEFAULT_RELATIONSHIP
+    relationship_label: str = "朋友"
     system_prompt_friend: Optional[str] = None
     system_prompt_partner: Optional[str] = None
     system_prompt_lover: Optional[str] = None

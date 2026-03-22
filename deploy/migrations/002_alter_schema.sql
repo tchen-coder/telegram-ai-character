@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS `user_roles` (
   `id` INT AUTO_INCREMENT PRIMARY KEY,
   `user_id` VARCHAR(50) NOT NULL,
   `role_id` INT NOT NULL,
-  `relationship` INT NOT NULL DEFAULT 3,
+  `relationship` INT NOT NULL DEFAULT 1,
   `is_current` BOOLEAN DEFAULT FALSE,
   `first_interaction_at` DATETIME,
   `last_interaction_at` DATETIME,
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS `user_roles` (
   INDEX `idx_user_current` (`user_id`, `is_current`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-ALTER TABLE `user_roles` MODIFY COLUMN `relationship` INT NOT NULL DEFAULT 3;
+ALTER TABLE `user_roles` MODIFY COLUMN `relationship` INT NOT NULL DEFAULT 1;
 
 -- 检查 chat_history 表字段
 ALTER TABLE `chat_history` ADD COLUMN IF NOT EXISTS `image_url` VARCHAR(500);
