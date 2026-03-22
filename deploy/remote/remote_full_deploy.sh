@@ -24,36 +24,41 @@ WEBAPP_TAR="/tmp/telegram-ai-webapp-latest.tar.gz"
 
 print_help() {
   cat <<'EOF'
-Usage:
+用法:
   ./deploy/remote/remote_full_deploy.sh [--help]
 
-Description:
-  One-command deploy:
-  1) package local code
-  2) upload to remote host
-  3) extract into remote runtime dirs
-  4) rebuild + restart selected services
-  5) run basic health checks
+说明:
+  一键部署流程：
+  1) 本地打包
+  2) 上传远端
+  3) 远端解压到运行目录
+  4) 重建镜像并重启指定服务
+  5) 健康检查
 
-Environment variables:
-  REMOTE_HOST            default: 43.160.212.233
-  REMOTE_USER            default: root
-  REMOTE_PASS            default: agentassitant2026@
-  REMOTE_APP_ROOT        default: /opt/telegram-ai-character
-  REMOTE_WEBAPP_ROOT     default: /opt/telegram-ai-webapp
-  REMOTE_COMPOSE_FILE    default: /opt/telegram-ai-character/deploy/app.compose.yaml
-  LOCAL_WEBAPP_ROOT      default: ../telegram-ai-webapp (relative to project root)
+环境变量:
+  REMOTE_HOST            默认: 43.160.212.233
+  REMOTE_USER            默认: root
+  REMOTE_PASS            默认: agentassitant2026@
+  REMOTE_APP_ROOT        默认: /opt/telegram-ai-character
+  REMOTE_WEBAPP_ROOT     默认: /opt/telegram-ai-webapp
+  REMOTE_COMPOSE_FILE    默认: /opt/telegram-ai-character/deploy/app.compose.yaml
+  LOCAL_WEBAPP_ROOT      默认: ../telegram-ai-webapp（相对项目目录）
 
-Restart bundle:
-  RESTART_BUNDLE=core        default; restart: api bot webapp
-  RESTART_BUNDLE=webapp_only restart: webapp
-  RESTART_BUNDLE=full        restart:
+重启大包:
+  RESTART_BUNDLE=core        默认；重启: api bot webapp
+  RESTART_BUNDLE=webapp_only 仅重启: webapp
+  RESTART_BUNDLE=full        全量重启:
                              mysql redis text2vec-transformers weaviate
                              api bot webapp miniapp-gateway miniapp-tunnel
-  RESTART_BUNDLE=custom      requires TARGET_SERVICES
-  TARGET_SERVICES            e.g. "api webapp"
+  RESTART_BUNDLE=custom      自定义，需配 TARGET_SERVICES
+  TARGET_SERVICES            例如: "api webapp"
 
-Examples:
+按服务智能上传:
+  - 只重启 webapp: 仅上传 webapp 代码
+  - 只重启 api/bot: 仅上传后端代码
+  - 同时包含 webapp 与 api/bot: 两边都上传
+
+示例:
   RESTART_BUNDLE=core ./deploy/remote/remote_full_deploy.sh
   RESTART_BUNDLE=webapp_only ./deploy/remote/remote_full_deploy.sh
   RESTART_BUNDLE=custom TARGET_SERVICES="api webapp" ./deploy/remote/remote_full_deploy.sh
@@ -94,72 +99,118 @@ resolve_services() {
 }
 
 SERVICES_TO_RESTART="$(resolve_services)"
+NEED_APP_UPLOAD=0
+NEED_WEBAPP_UPLOAD=0
+
+for svc in ${SERVICES_TO_RESTART}; do
+  case "${svc}" in
+    api|bot|mysql|redis|weaviate|text2vec-transformers|miniapp-gateway|miniapp-tunnel)
+      NEED_APP_UPLOAD=1
+      ;;
+    webapp)
+      NEED_WEBAPP_UPLOAD=1
+      ;;
+  esac
+done
 
 if ! command -v expect >/dev/null 2>&1; then
   echo "ERROR: expect is required on local machine."
   exit 1
 fi
 
-echo "[1/5] Packaging character app..."
-tar -czf "${APP_TAR}" \
-  -C "${LOCAL_PROJECT_ROOT}" \
-  --exclude='__pycache__' \
-  --exclude='*.pyc' \
-  --exclude='.git' \
-  --exclude='.DS_Store' \
-  --exclude='._*' \
-  app services scripts deploy requirements.txt
+if [ "${NEED_APP_UPLOAD}" = "1" ]; then
+  echo "[1/5] 打包后端代码..."
+  tar -czf "${APP_TAR}" \
+    -C "${LOCAL_PROJECT_ROOT}" \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --exclude='.git' \
+    --exclude='.DS_Store' \
+    --exclude='._*' \
+    app services scripts deploy requirements.txt
+else
+  echo "[1/5] 跳过后端打包（本次重启服务不需要）"
+fi
 
-echo "[2/5] Packaging webapp..."
-tar -czf "${WEBAPP_TAR}" \
-  -C "${LOCAL_WEBAPP_ROOT}" \
-  --exclude='__pycache__' \
-  --exclude='*.pyc' \
-  --exclude='node_modules' \
-  --exclude='.git' \
-  --exclude='.DS_Store' \
-  --exclude='._*' \
-  .
+if [ "${NEED_WEBAPP_UPLOAD}" = "1" ]; then
+  echo "[2/5] 打包 webapp..."
+  tar -czf "${WEBAPP_TAR}" \
+    -C "${LOCAL_WEBAPP_ROOT}" \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --exclude='node_modules' \
+    --exclude='.git' \
+    --exclude='.DS_Store' \
+    --exclude='._*' \
+    .
+else
+  echo "[2/5] 跳过 webapp 打包（本次重启服务不需要）"
+fi
 
-echo "[3/5] Uploading tarballs..."
-expect -c "
-  log_user 1
-  set timeout 300
-  spawn scp -o StrictHostKeyChecking=no ${APP_TAR} ${REMOTE_USER}@${REMOTE_HOST}:/tmp/telegram-ai-character-latest-lite.tar.gz
-  expect \"password:\"
-  send -- \"${REMOTE_PASS}\r\"
-  expect eof
-  catch wait result
-  exit [lindex \$result 3]
-"
+echo "[3/5] 上传包..."
+if [ "${NEED_APP_UPLOAD}" = "1" ]; then
+  expect -c "
+    log_user 1
+    set timeout 300
+    spawn scp -o StrictHostKeyChecking=no ${APP_TAR} ${REMOTE_USER}@${REMOTE_HOST}:/tmp/telegram-ai-character-latest-lite.tar.gz
+    expect \"password:\"
+    send -- \"${REMOTE_PASS}\r\"
+    expect eof
+    catch wait result
+    exit [lindex \$result 3]
+  "
+fi
 
-expect -c "
-  log_user 1
-  set timeout 300
-  spawn scp -o StrictHostKeyChecking=no ${WEBAPP_TAR} ${REMOTE_USER}@${REMOTE_HOST}:/tmp/telegram-ai-webapp-latest.tar.gz
-  expect \"password:\"
-  send -- \"${REMOTE_PASS}\r\"
-  expect eof
-  catch wait result
-  exit [lindex \$result 3]
-"
+if [ "${NEED_WEBAPP_UPLOAD}" = "1" ]; then
+  expect -c "
+    log_user 1
+    set timeout 300
+    spawn scp -o StrictHostKeyChecking=no ${WEBAPP_TAR} ${REMOTE_USER}@${REMOTE_HOST}:/tmp/telegram-ai-webapp-latest.tar.gz
+    expect \"password:\"
+    send -- \"${REMOTE_PASS}\r\"
+    expect eof
+    catch wait result
+    exit [lindex \$result 3]
+  "
+fi
 
 echo "[4/5] Extracting and restarting containers..."
 echo "Bundle=${RESTART_BUNDLE}; Services=${SERVICES_TO_RESTART}"
+echo "Upload app=${NEED_APP_UPLOAD}, webapp=${NEED_WEBAPP_UPLOAD}"
+REMOTE_DEPLOY_SCRIPT="/tmp/remote_full_deploy_exec.sh"
+cat > "${REMOTE_DEPLOY_SCRIPT}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+TS=\$(date +%Y%m%d%H%M%S)
+mkdir -p ${REMOTE_APP_ROOT} ${REMOTE_WEBAPP_ROOT}
+if test "${NEED_APP_UPLOAD}" = "1"; then
+  test -d ${REMOTE_APP_ROOT}/current && cp -a ${REMOTE_APP_ROOT}/current ${REMOTE_APP_ROOT}/current.bak.\$TS || true
+  mkdir -p ${REMOTE_APP_ROOT}/current
+  tar -xzf /tmp/telegram-ai-character-latest-lite.tar.gz -C ${REMOTE_APP_ROOT}/current
+fi
+if test "${NEED_WEBAPP_UPLOAD}" = "1"; then
+  test -d ${REMOTE_WEBAPP_ROOT}/current && cp -a ${REMOTE_WEBAPP_ROOT}/current ${REMOTE_WEBAPP_ROOT}/current.bak.\$TS || true
+  mkdir -p ${REMOTE_WEBAPP_ROOT}/current
+  tar -xzf /tmp/telegram-ai-webapp-latest.tar.gz -C ${REMOTE_WEBAPP_ROOT}/current
+fi
+docker compose -f ${REMOTE_COMPOSE_FILE} up -d --build ${SERVICES_TO_RESTART}
+EOF
+
+expect -c "
+  log_user 1
+  set timeout 300
+  spawn scp -o StrictHostKeyChecking=no ${REMOTE_DEPLOY_SCRIPT} ${REMOTE_USER}@${REMOTE_HOST}:/tmp/remote_full_deploy_exec.sh
+  expect \"password:\"
+  send -- \"${REMOTE_PASS}\r\"
+  expect eof
+  catch wait result
+  exit [lindex \$result 3]
+"
+
 expect -c "
   log_user 1
   set timeout 1200
-  spawn ssh -tt -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} \"bash -lc '
-    set -e
-    TS=\\\$(date +%Y%m%d%H%M%S)
-    mkdir -p ${REMOTE_APP_ROOT} ${REMOTE_WEBAPP_ROOT}
-    test -d ${REMOTE_APP_ROOT}/current && cp -a ${REMOTE_APP_ROOT}/current ${REMOTE_APP_ROOT}/current.bak.\\\$TS || true
-    test -d ${REMOTE_WEBAPP_ROOT}/current && cp -a ${REMOTE_WEBAPP_ROOT}/current ${REMOTE_WEBAPP_ROOT}/current.bak.\\\$TS || true
-    mkdir -p ${REMOTE_APP_ROOT}/current ${REMOTE_WEBAPP_ROOT}/current
-    tar -xzf /tmp/telegram-ai-character-latest-lite.tar.gz -C ${REMOTE_APP_ROOT}/current
-    tar -xzf /tmp/telegram-ai-webapp-latest.tar.gz -C ${REMOTE_WEBAPP_ROOT}/current
-    docker compose -f ${REMOTE_COMPOSE_FILE} up -d --build ${SERVICES_TO_RESTART}
-  '\"
+  spawn ssh -tt -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} \"bash /tmp/remote_full_deploy_exec.sh\"
   expect \"password:\"
   send -- \"${REMOTE_PASS}\r\"
   expect eof
