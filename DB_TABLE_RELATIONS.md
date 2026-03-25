@@ -36,7 +36,7 @@ TELEGRAM_BOT_TOKEN=dummy DATABASE_URL='mysql://root:password@127.0.0.1:3306/tele
 - `id`：主键
 - `role_name`：角色名，唯一
 - `system_prompt`：基础系统提示词
-- `system_prompt_friend` / `system_prompt_partner` / `system_prompt_lover`：关系分级提示词
+- `system_prompt_friend` / `system_prompt_partner` / `system_prompt_lover`：关系分级提示词(废弃⚠️）
 - `scenario`：场景描述
 - `greeting_message`：开场白
 - `avatar_url`：头像地址
