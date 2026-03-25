@@ -212,7 +212,85 @@ TELEGRAM_BOT_TOKEN=dummy DATABASE_URL='mysql://root:password@127.0.0.1:3306/tele
 - `roles` 1:N `user_role_relationship_events`
 - `chat_history` 1:N `user_role_relationship_events`（通过 `trigger_message_id`）
 
-### 3.3 ER 图（Mermaid）
+---
+
+## 4. 重点解读：三张关系核心表
+
+你提到的这三张表可以理解为：
+
+- `role_relationship_configs`：规则配置（每个角色一份）
+- `user_role_relationship_states`：当前状态（每个用户+角色一份）
+- `user_role_relationship_events`：过程日志（每轮一条）
+
+### 4.1 `role_relationship_configs` 是“规则层”
+
+核心作用：定义“这个角色的关系系统怎么玩”。
+
+它决定：
+- 初始关系值（`initial_rv`）
+- 多久结算一次（`update_frequency`）
+- 每次涨跌上限（`max_negative_delta` / `max_positive_delta`）
+- 阶段地板与升级阈值（`stage_floor_rv` / `stage_thresholds`）
+
+读写时机：
+- 读取：每次对话进入关系计算前都会读（`RelationshipService.ensure_role_config`）。
+- 写入：角色首次使用时若缺失会自动创建默认配置；已有配置会做规范化修正后回写（例如阈值合法化）。
+
+一句话：它不存用户进度，只存“这类角色的关系演进规则”。
+
+### 4.2 `user_role_relationship_states` 是“当前进度层”
+
+核心作用：保存某个用户与某个角色的关系实时状态。
+
+它包含：
+- 当前值/阶段：`current_rv`、`current_stage`
+- 历史关键值：`last_rv`、`last_delta`
+- 回合推进：`turn_count`、`last_update_at_turn`
+- 待结算池：`pending_delta_accumulator`
+
+读写时机：
+- 读取：每次用户发消息都会读取，作为本轮计算基础。
+- 写入：首次对话时创建初始状态（来自 config + 旧关系兜底）；每轮都会更新（至少 `turn_count` 会变化）；触发结算时落地新 `rv/stage`，未触发时只累计 `pending_delta_accumulator`。
+
+一句话：它是“现在到哪一步了”的单行快照。
+
+### 4.3 `user_role_relationship_events` 是“审计日志层”
+
+核心作用：记录每一轮关系计算发生了什么，便于回溯和分析。
+
+关键特点：
+- 每个用户消息触发一次事件写入（不是只在升级时写）。
+- `triggered_update=false`：本轮只累计，不改 `current_rv`。
+- `triggered_update=true`：本轮结算，记录 `rv_before/rv_after`、`stage_before/stage_after`、`applied_delta`。
+- `trigger_message_id` 关联到 `chat_history.id`，可以追溯是由哪条消息触发。
+
+一句话：state 是“结果”，events 是“过程”。
+
+### 4.4 三表如何协同（真实时序）
+
+示例：某角色配置 `update_frequency=3`。
+
+第 1 轮用户消息：
+- 读 config（规则）
+- 读/建 state（当前进度）
+- 写 event（`triggered_update=true`，首轮直接结算）
+- 更新 state（`turn_count=1`，`current_rv` 可能变化）
+
+第 2 轮用户消息：
+- 写 event（`triggered_update=false`）
+- state 仅累计 `pending_delta_accumulator`
+
+第 3 轮用户消息：
+- 写 event（`triggered_update=true`）
+- 把第 2 轮 pending + 第 3 轮 delta 一起结算
+- 回写 state（`current_rv/current_stage/last_delta`）
+
+结论：
+- 看“现在关系等级”：查 `user_role_relationship_states`
+- 看“为什么变成这样”：查 `user_role_relationship_events`
+- 看“规则是否合理”：查 `role_relationship_configs`
+
+### 4.5 ER 图（Mermaid）
 
 ```mermaid
 erDiagram
@@ -228,7 +306,7 @@ erDiagram
 
 ---
 
-## 4. 校验 SQL
+## 5. 校验 SQL
 
 ```sql
 SHOW TABLES;
@@ -244,3 +322,130 @@ WHERE TABLE_SCHEMA='telegram_ai_character'
   AND REFERENCED_TABLE_NAME IS NOT NULL
 ORDER BY TABLE_NAME,COLUMN_NAME;
 ```
+
+---
+
+## 6. 真实 SQL 排查模板（按 user_id + role_id）
+
+适用场景：你想搞清楚“某个用户在某个角色下，关系为什么变成现在这样”。
+
+先替换变量：
+
+```sql
+-- 按需替换
+SET @uid = '123456';
+SET @rid = 1;
+```
+
+### 6.1 看当前快照（state）
+
+```sql
+SELECT
+  user_id,
+  role_id,
+  current_rv,
+  current_stage,
+  max_unlocked_stage,
+  last_rv,
+  last_delta,
+  turn_count,
+  update_frequency,
+  pending_delta_accumulator,
+  last_update_at_turn,
+  updated_at
+FROM user_role_relationship_states
+WHERE user_id = @uid AND role_id = @rid;
+```
+
+### 6.2 看角色规则（config）
+
+```sql
+SELECT
+  role_id,
+  initial_rv,
+  update_frequency,
+  max_negative_delta,
+  max_positive_delta,
+  recent_window_size,
+  stage_floor_rv,
+  stage_thresholds,
+  updated_at
+FROM role_relationship_configs
+WHERE role_id = @rid;
+```
+
+### 6.3 看最近 30 条关系事件（events）
+
+```sql
+SELECT
+  id,
+  turn_index,
+  trigger_message_id,
+  triggered_update,
+  delta,
+  pending_before,
+  applied_delta,
+  rv_before,
+  rv_after,
+  stage_before,
+  stage_after,
+  scoring_source,
+  reason_text,
+  created_at
+FROM user_role_relationship_events
+WHERE user_id = @uid AND role_id = @rid
+ORDER BY id DESC
+LIMIT 30;
+```
+
+### 6.4 只看“真正结算”的事件
+
+```sql
+SELECT
+  id,
+  turn_index,
+  applied_delta,
+  rv_before,
+  rv_after,
+  stage_before,
+  stage_after,
+  created_at
+FROM user_role_relationship_events
+WHERE user_id = @uid
+  AND role_id = @rid
+  AND triggered_update = 1
+ORDER BY id DESC
+LIMIT 20;
+```
+
+### 6.5 把事件关联到触发消息（chat_history）
+
+```sql
+SELECT
+  e.id AS event_id,
+  e.turn_index,
+  e.triggered_update,
+  e.delta,
+  e.applied_delta,
+  e.rv_before,
+  e.rv_after,
+  e.stage_before,
+  e.stage_after,
+  m.id AS msg_id,
+  m.message_type,
+  LEFT(m.content, 120) AS msg_preview,
+  m.created_at AS msg_created_at,
+  e.created_at AS event_created_at
+FROM user_role_relationship_events e
+LEFT JOIN chat_history m ON m.id = e.trigger_message_id
+WHERE e.user_id = @uid AND e.role_id = @rid
+ORDER BY e.id DESC
+LIMIT 30;
+```
+
+### 6.6 快速判读要点
+
+- `state.current_rv/current_stage` 是当前结果，以它为准。
+- `events.triggered_update=0` 代表只累计，不改阶段；`=1` 才是结算点。
+- `events.applied_delta` 才是最终落到 RV 的变化量（不是原始 `delta`）。
+- 如果感觉“升级慢/快”，先看 `config.update_frequency` 和 `stage_thresholds`。
