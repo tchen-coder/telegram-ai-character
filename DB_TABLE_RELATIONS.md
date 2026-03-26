@@ -1,451 +1,536 @@
-# Telegram AI Character 数据库表说明与关联
+# Telegram AI Character 底层数据表设计
 
-## 1. 环境与初始化结果
+本文档只描述当前系统仍在使用的底层表结构，不包含已经废弃的旧关系状态表、事件表或其它历史方案。
 
-- MySQL 容器：`telegram-ai-mysql`
-- 镜像：`mysql:8.4`
-- 端口：`3306`
-- Root 密码：`password`
-- 数据库：`telegram_ai_character`
-- Python 环境：系统级 `Python 3.12.12`
-- 初始化命令：
+## 1. 当前保留表
 
-```bash
-TELEGRAM_BOT_TOKEN=dummy DATABASE_URL='mysql://root:password@127.0.0.1:3306/telegram_ai_character' python3.12 scripts/init_db.py
-```
+当前数据库 `telegram_ai_character` 仅保留以下 6 张业务表：
 
-- 初始化后表：
-  - `roles`
-  - `role_relationship_prompts`
-  - `role_relationship_configs`
-  - `role_images`
-  - `user_roles`
-  - `user_role_relationship_states`
-  - `user_role_relationship_events`
-  - `chat_history`
+- `roles`
+- `role_relationship_prompts`
+- `role_relationship_configs`
+- `role_images`
+- `user_roles`
+- `chat_history`
 
----
+## 2. 设计原则
 
-## 2. 表说明
+- `roles` 是角色主表，所有角色配置都围绕它展开。
+- `role_relationship_prompts` 存不同关系阶段的提示词。
+- `role_relationship_configs` 存不同角色的关系演进规则。
+- `role_images` 存角色图片资源。
+- `user_roles` 存用户与角色之间的当前关系状态。
+- `chat_history` 存用户与角色的消息明细。
 
-### 2.1 `roles`（角色主表）
+核心思路是：
 
-用途：存储 AI 角色基础配置与主提示词。
+- 角色定义和用户状态分离。
+- 关系规则和关系结果分离。
+- 聊天记录单独保存，不把消息塞进用户关系表。
 
-关键字段：
-- `id`：主键
-- `role_name`：角色名，唯一
-- `system_prompt`：基础系统提示词
-- `system_prompt_friend` / `system_prompt_partner` / `system_prompt_lover`：关系分级提示词(废弃⚠️）
-- `scenario`：场景描述
-- `greeting_message`：开场白
-- `avatar_url`：头像地址
-- `tags`：JSON 标签
-- `is_active`：是否启用
-- `created_at` / `updated_at`：创建/更新时间
-
-约束：
-- PK：`id`
-- UK：`role_name`
-
-### 2.2 `role_relationship_prompts`（角色关系等级提示词）
-
-用途：按角色+关系等级存储提示词（替代/补充 `roles` 中分级 prompt 字段）。
-
-关键字段：
-- `id`：主键
-- `role_id`：角色 ID
-- `relationship`：关系等级（1/2/3）
-- `prompt_text`：该等级提示词
-- `is_active`：是否启用
-- `created_at` / `updated_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-- UK：`(role_id, relationship)`
-
-### 2.3 `role_relationship_configs`（角色关系系统参数）
-
-用途：每个角色一份关系演进参数配置。
-
-关键字段：
-- `id`：主键
-- `role_id`：角色 ID（每个角色唯一）
-- `initial_rv`：初始关系值
-- `update_frequency`：更新频率
-- `max_negative_delta` / `max_positive_delta`：单次波动上限
-- `recent_window_size`：近期窗口长度
-- `stage_names` / `stage_floor_rv` / `stage_thresholds`：阶段配置 JSON
-- `paid_boost_enabled`：是否启用付费加速
-- `meta_json`：扩展字段
-- `created_at` / `updated_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-- UK：`role_id`
-
-### 2.4 `role_images`（角色图片资源）
-
-用途：角色图片素材（头像/阶段图/触发图等）。
-
-关键字段：
-- `id`：主键
-- `role_id`：角色 ID
-- `image_url`：图片地址
-- `image_type`：图片类型
-- `stage_key`：阶段标识（可空）
-- `trigger_type`：触发方式
-- `sort_order`：排序
-- `is_active`：是否启用
-- `meta_json`：扩展字段
-- `created_at` / `updated_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-
-### 2.5 `user_roles`（用户-角色绑定）
-
-用途：记录用户与角色的关系绑定及当前选择。
-
-关键字段：
-- `id`：主键
-- `user_id`：用户标识（业务 ID）
-- `role_id`：角色 ID
-- `relationship`：关系等级（默认 1）
-- `is_current`：是否当前角色
-- `first_interaction_at` / `last_interaction_at`
-- `created_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-- UK：`(user_id, role_id)`
-
-### 2.6 `user_role_relationship_states`（用户-角色关系状态快照）
-
-用途：用户与角色关系演进的当前状态（RV、阶段、累计值等）。
-
-关键字段：
-- `id`：主键
-- `user_id`：用户标识
-- `role_id`：角色 ID
-- `current_rv` / `current_stage` / `max_unlocked_stage`
-- `last_rv` / `last_delta`
-- `last_update_at_turn` / `turn_count`
-- `update_frequency` / `pending_delta_accumulator`
-- `paid_boost_rv` / `paid_boost_applied` / `paid_boost_source`
-- `emotion_summary_text` / `emotion_summary_updated_turn` / `emotion_adjustment_factor`
-- `created_at` / `updated_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-- UK：`(user_id, role_id)`
-
-### 2.7 `user_role_relationship_events`（用户-角色关系事件日志）
-
-用途：记录每轮关系变化事件，用于审计与分析。
-
-关键字段：
-- `id`：主键
-- `user_id`：用户标识
-- `role_id`：角色 ID
-- `trigger_message_id`：触发消息 ID（可空）
-- `turn_index`
-- `triggered_update`
-- `delta` / `pending_before` / `applied_delta`
-- `rv_before` / `rv_after`
-- `stage_before` / `stage_after`
-- `scoring_source` / `reason_text`
-- `payload_json`
-- `created_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-- FK：`trigger_message_id -> chat_history.id`
-
-### 2.8 `chat_history`（聊天记录）
-
-用途：存储用户与角色的消息记录。
-
-关键字段：
-- `id`：主键
-- `user_id`：用户标识
-- `role_id`：角色 ID
-- `message_type`：`USER | ASSISTANT | ASSISTANT_IMAGE`
-- `content`：消息文本
-- `image_url`：图片消息地址（可空）
-- `emotion_data` / `decision_data` / `meta_json`：JSON 扩展
-- `created_at`
-
-约束：
-- PK：`id`
-- FK：`role_id -> roles.id`
-
----
-
-## 3. 关联关系总览
+## 3. 表级关系总览
 
 ### 3.1 外键关系
 
-- `chat_history.role_id -> roles.id`
-- `role_images.role_id -> roles.id`
-- `role_relationship_configs.role_id -> roles.id`
 - `role_relationship_prompts.role_id -> roles.id`
-- `user_role_relationship_events.role_id -> roles.id`
-- `user_role_relationship_events.trigger_message_id -> chat_history.id`
-- `user_role_relationship_states.role_id -> roles.id`
+- `role_relationship_configs.role_id -> roles.id`
+- `role_images.role_id -> roles.id`
 - `user_roles.role_id -> roles.id`
+- `chat_history.role_id -> roles.id`
 
-### 3.2 业务关系（逻辑）
+### 3.2 业务基数
 
-- `roles` 1:N `chat_history`
-- `roles` 1:N `role_images`
-- `roles` 1:N `role_relationship_prompts`
-- `roles` 1:1 `role_relationship_configs`
-- `roles` 1:N `user_roles`
-- `roles` 1:N `user_role_relationship_states`
-- `roles` 1:N `user_role_relationship_events`
-- `chat_history` 1:N `user_role_relationship_events`（通过 `trigger_message_id`）
+- `roles` 1 : N `role_relationship_prompts`
+- `roles` 1 : 1 `role_relationship_configs`
+- `roles` 1 : N `role_images`
+- `roles` 1 : N `user_roles`
+- `roles` 1 : N `chat_history`
 
----
+### 3.3 关键关联说明
 
-## 4. 重点解读：三张关系核心表
+- 一个角色可以有多个关系阶段提示词，但同一个关系阶段只能有一条生效记录。
+- 一个角色只能有一套关系演进配置。
+- 一个用户和一个角色只有一条 `user_roles` 绑定记录。
+- 一段聊天历史通过 `user_id + role_id` 聚合，不再额外维护独立会话主表。
 
-你提到的这三张表可以理解为：
+## 4. 各表详细说明
 
-- `role_relationship_configs`：规则配置（每个角色一份）
-- `user_role_relationship_states`：当前状态（每个用户+角色一份）
-- `user_role_relationship_events`：过程日志（每轮一条）
+## 4.1 `roles`
 
-### 4.1 `role_relationship_configs` 是“规则层”
+用途：角色主表，定义角色的基础信息和默认能力。
 
-核心作用：定义“这个角色的关系系统怎么玩”。
+### 字段说明
 
-它决定：
-- 初始关系值（`initial_rv`）
-- 多久结算一次（`update_frequency`）
-- 每次涨跌上限（`max_negative_delta` / `max_positive_delta`）
-- 阶段地板与升级阈值（`stage_floor_rv` / `stage_thresholds`）
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 数据库主键 | 系统内部主键，自增 |
+| `role_id` | `INT` | 业务角色编号 | 业务侧稳定标识，用于对接外部配置或迁移 |
+| `role_name` | `VARCHAR(100)` | 角色名称 | 唯一，例如“梦瑶” |
+| `system_prompt` | `TEXT` | 基础提示词 | 角色的默认提示词底座 |
+| `scenario` | `TEXT` | 角色场景描述 | 用于前端展示、RAG 索引或上下文补充 |
+| `greeting_message` | `TEXT` | 开场白 | 用户初次进入角色时的默认文案 |
+| `avatar_url` | `VARCHAR(500)` | 角色头像地址 | 可为 COS/HTTP 地址 |
+| `tags` | `JSON` | 标签列表 | 例如 `["熟女","邻居"]` |
+| `is_active` | `BOOLEAN` | 是否启用 | 软开关，前台只展示启用角色 |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+| `updated_at` | `DATETIME` | 更新时间 | 更新时自动刷新 |
 
-读写时机：
-- 读取：每次对话进入关系计算前都会读（`RelationshipService.ensure_role_config`）。
-- 写入：角色首次使用时若缺失会自动创建默认配置；已有配置会做规范化修正后回写（例如阈值合法化）。
+### 约束
 
-一句话：它不存用户进度，只存“这类角色的关系演进规则”。
+- 主键：`id`
+- 唯一约束：`role_name`
+- 索引：`idx_role_active(is_active)`
 
-### 4.2 `user_role_relationship_states` 是“当前进度层”
+### 业务说明
 
-核心作用：保存某个用户与某个角色的关系实时状态。
+- `role_id` 是业务主键，`id` 是数据库主键，两者不要混用。
+- 代码内部表关联统一使用 `roles.id`。
+- 前端展示和外部同步时，可以优先暴露 `role_id`。
 
-它包含：
-- 当前值/阶段：`current_rv`、`current_stage`
-- 历史关键值：`last_rv`、`last_delta`
-- 回合推进：`turn_count`、`last_update_at_turn`
-- 待结算池：`pending_delta_accumulator`
+## 4.2 `role_relationship_prompts`
 
-读写时机：
-- 读取：每次用户发消息都会读取，作为本轮计算基础。
-- 写入：首次对话时创建初始状态（来自 config + 旧关系兜底）；每轮都会更新（至少 `turn_count` 会变化）；触发结算时落地新 `rv/stage`，未触发时只累计 `pending_delta_accumulator`。
+用途：保存角色在不同关系阶段下的提示词。
 
-一句话：它是“现在到哪一步了”的单行快照。
+### 字段说明
 
-### 4.3 `user_role_relationship_events` 是“审计日志层”
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 主键 | 自增 |
+| `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `relationship` | `INT` | 关系阶段值 | 当前默认约定：`1=朋友`，`2=恋人`，`3=爱人` |
+| `prompt_text` | `TEXT` | 当前阶段提示词 | 生成回复前按该值覆盖角色阶段 prompt |
+| `is_active` | `BOOLEAN` | 是否启用 | 便于禁用某条阶段 prompt |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+| `updated_at` | `DATETIME` | 更新时间 | 更新时自动刷新 |
 
-核心作用：记录每一轮关系计算发生了什么，便于回溯和分析。
+### 约束
 
-关键特点：
-- 每个用户消息触发一次事件写入（不是只在升级时写）。
-- `triggered_update=false`：本轮只累计，不改 `current_rv`。
-- `triggered_update=true`：本轮结算，记录 `rv_before/rv_after`、`stage_before/stage_after`、`applied_delta`。
-- `trigger_message_id` 关联到 `chat_history.id`，可以追溯是由哪条消息触发。
+- 主键：`id`
+- 外键：`role_id -> roles.id`
+- 唯一约束：`uk_role_relationship_prompt(role_id, relationship)`
+- 索引：`idx_role_relationship_prompt(role_id, relationship, is_active)`
 
-一句话：state 是“结果”，events 是“过程”。
+### 业务说明
 
-### 4.4 三表如何协同（真实时序）
+- `roles.system_prompt` 是基础提示词。
+- `role_relationship_prompts.prompt_text` 是关系阶段提示词。
 
-示例：某角色配置 `update_frequency=3`。
+## 4.3 `role_relationship_configs`
 
-第 1 轮用户消息：
-- 读 config（规则）
-- 读/建 state（当前进度）
-- 写 event（`triggered_update=true`，首轮直接结算）
-- 更新 state（`turn_count=1`，`current_rv` 可能变化）
+用途：定义角色关系系统的演进规则，而不是保存用户当前关系结果。
 
-第 2 轮用户消息：
-- 写 event（`triggered_update=false`）
-- state 仅累计 `pending_delta_accumulator`
+### 字段说明
 
-第 3 轮用户消息：
-- 写 event（`triggered_update=true`）
-- 把第 2 轮 pending + 第 3 轮 delta 一起结算
-- 回写 state（`current_rv/current_stage/last_delta`）
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 主键 | 自增 |
+| `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `initial_rv` | `INT` | 初始关系值 | 新用户首次和该角色建立关系时的默认值 |
+| `update_frequency` | `INT` | 更新频率 | 每多少轮消息结算一次关系变化 |
+| `max_negative_delta` | `INT` | 单次最大负向变化 | 控制关系下降幅度 |
+| `max_positive_delta` | `INT` | 单次最大正向变化 | 控制关系上升幅度 |
+| `recent_window_size` | `INT` | 近期窗口大小 | 用于分析最近若干轮互动 |
+| `stage_names` | `JSON` | 阶段名称列表 | 例如 `["朋友","恋人","爱人"]` |
+| `stage_floor_rv` | `JSON` | 各阶段下限 | 例如 `[0,40,70]` |
+| `stage_thresholds` | `JSON` | 各阶段阈值 | 例如 `[40,70,100]` |
+| `paid_boost_enabled` | `BOOLEAN` | 是否允许付费加速 | 当前可保留，后续扩展 |
+| `meta_json` | `JSON` | 扩展字段 | 预留 |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+| `updated_at` | `DATETIME` | 更新时间 | 更新时自动刷新 |
 
-结论：
-- 看“现在关系等级”：查 `user_role_relationship_states`
-- 看“为什么变成这样”：查 `user_role_relationship_events`
-- 看“规则是否合理”：查 `role_relationship_configs`
+### 约束
 
-### 4.5 ER 图（Mermaid）
+- 主键：`id`
 
-```mermaid
-erDiagram
-    ROLES ||--o{ CHAT_HISTORY : has
-    ROLES ||--o{ ROLE_IMAGES : has
-    ROLES ||--o{ ROLE_RELATIONSHIP_PROMPTS : has
-    ROLES ||--|| ROLE_RELATIONSHIP_CONFIGS : has
-    ROLES ||--o{ USER_ROLES : binds
-    ROLES ||--o{ USER_ROLE_RELATIONSHIP_STATES : tracks
-    ROLES ||--o{ USER_ROLE_RELATIONSHIP_EVENTS : logs
-    CHAT_HISTORY ||--o{ USER_ROLE_RELATIONSHIP_EVENTS : triggers
-```
 
----
 
-## 5. 校验 SQL
 
-```sql
-SHOW TABLES;
+ 外键：`role_id -> roles.id`
+- 唯一约束：`uk_role_relationship_config(role_id)`
+- 索引：`idx_role_relationship_config(role_id)`
 
-SELECT TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,COLUMN_KEY,EXTRA
-FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA='telegram_ai_character'
-ORDER BY TABLE_NAME,ORDINAL_POSITION;
+### 业务说明
 
-SELECT TABLE_NAME,COLUMN_NAME,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME
-FROM information_schema.KEY_COLUMN_USAGE
-WHERE TABLE_SCHEMA='telegram_ai_character'
-  AND REFERENCED_TABLE_NAME IS NOT NULL
-ORDER BY TABLE_NAME,COLUMN_NAME;
-```
+- 这张表存“规则”，不存“用户进度”。
+- 用户当前处于哪个关系阶段，最终落在 `user_roles.relationship`。
+- 如果后续要支持更多阶段，可以优先扩展这里的 JSON 配置。
 
----
+### 当前代码中的实际使用方式
 
-## 6. 真实 SQL 排查模板（按 user_id + role_id）
+这张表当前由 [app/relationship/service.py](/Users/tchen/workspace/dev_engineer/pro/telegram-ai-character/app/relationship/service.py) 驱动，主要参与以下几个环节：
 
-适用场景：你想搞清楚“某个用户在某个角色下，关系为什么变成现在这样”。
+- `ensure_role_config(role.id)`
+- `_build_score_result(...)`
+- `_resolve_next_relationship(...)`
+- `_stage_label(...)`
 
-先替换变量：
+也就是说，这张表当前不是“预留表”，而是关系系统的实际配置来源。
 
-```sql
--- 按需替换
-SET @uid = '123456';
-SET @rid = 1;
-```
+### 运行时职责拆解
 
-### 6.1 看当前快照（state）
+#### 1. 角色首次进入关系系统时补默认配置
 
-```sql
-SELECT
-  user_id,
-  role_id,
-  current_rv,
-  current_stage,
-  max_unlocked_stage,
-  last_rv,
-  last_delta,
-  turn_count,
-  update_frequency,
-  pending_delta_accumulator,
-  last_update_at_turn,
-  updated_at
-FROM user_role_relationship_states
-WHERE user_id = @uid AND role_id = @rid;
-```
+如果某个角色没有对应配置，系统会自动创建默认值：
 
-### 6.2 看角色规则（config）
+- `initial_rv = 15`
+- `update_frequency = 1`
+- `max_negative_delta = 3`
+- `max_positive_delta = 15`
+- `recent_window_size = 12`
+- `stage_names = ["朋友", "恋人", "爱人"]`
+- `stage_floor_rv = [0, 40, 70]`
+- `stage_thresholds = [40, 70, 100]`
 
-```sql
-SELECT
-  role_id,
-  initial_rv,
-  update_frequency,
-  max_negative_delta,
-  max_positive_delta,
-  recent_window_size,
-  stage_floor_rv,
-  stage_thresholds,
-  updated_at
-FROM role_relationship_configs
-WHERE role_id = @rid;
-```
+这部分逻辑在 [app/relationship/service.py](/Users/tchen/workspace/dev_engineer/pro/telegram-ai-character/app/relationship/service.py) 的 `ensure_role_config`。
 
-### 6.3 看最近 30 条关系事件（events）
+#### 2. 关系阶段名称的显示来源
 
-```sql
-SELECT
-  id,
-  turn_index,
-  trigger_message_id,
-  triggered_update,
-  delta,
-  pending_before,
-  applied_delta,
-  rv_before,
-  rv_after,
-  stage_before,
-  stage_after,
-  scoring_source,
-  reason_text,
-  created_at
-FROM user_role_relationship_events
-WHERE user_id = @uid AND role_id = @rid
-ORDER BY id DESC
-LIMIT 30;
-```
+当前用户看到的关系名称，例如：
 
-### 6.4 只看“真正结算”的事件
+- `朋友`
+- `恋人`
+- `爱人`
 
-```sql
-SELECT
-  id,
-  turn_index,
-  applied_delta,
-  rv_before,
-  rv_after,
-  stage_before,
-  stage_after,
-  created_at
-FROM user_role_relationship_events
-WHERE user_id = @uid
-  AND role_id = @rid
-  AND triggered_update = 1
-ORDER BY id DESC
-LIMIT 20;
-```
+默认不是写死在前端，而是优先来自：
 
-### 6.5 把事件关联到触发消息（chat_history）
+- `role_relationship_configs.stage_names`
 
-```sql
-SELECT
-  e.id AS event_id,
-  e.turn_index,
-  e.triggered_update,
-  e.delta,
-  e.applied_delta,
-  e.rv_before,
-  e.rv_after,
-  e.stage_before,
-  e.stage_after,
-  m.id AS msg_id,
-  m.message_type,
-  LEFT(m.content, 120) AS msg_preview,
-  m.created_at AS msg_created_at,
-  e.created_at AS event_created_at
-FROM user_role_relationship_events e
-LEFT JOIN chat_history m ON m.id = e.trigger_message_id
-WHERE e.user_id = @uid AND e.role_id = @rid
-ORDER BY e.id DESC
-LIMIT 30;
-```
+这意味着不同角色理论上可以有不同阶段显示名。
 
-### 6.6 快速判读要点
+#### 3. 关系推进阈值来源
 
-- `state.current_rv/current_stage` 是当前结果，以它为准。
-- `events.triggered_update=0` 代表只累计，不改阶段；`=1` 才是结算点。
-- `events.applied_delta` 才是最终落到 RV 的变化量（不是原始 `delta`）。
-- 如果感觉“升级慢/快”，先看 `config.update_frequency` 和 `stage_thresholds`。
+当前系统在判断是否从：
+
+- `1 -> 2`
+- `2 -> 3`
+
+时，会读取：
+
+- `stage_thresholds`
+
+当前默认值：
+
+- `[40, 70, 100]`
+
+在现行实现里，系统会把一次消息打分后的 `delta` 归一化成百分制，再和阈值比较：
+
+- 若当前关系是 `1` 且推进分达到 `stage_thresholds[0]`，升级到 `2`
+- 若当前关系是 `2` 且推进分达到 `stage_thresholds[1]`，升级到 `3`
+
+这部分逻辑在 [app/relationship/service.py](/Users/tchen/workspace/dev_engineer/pro/telegram-ai-character/app/relationship/service.py) 的 `_resolve_next_relationship`。
+
+#### 4. 关系打分的窗口和上下限来源
+
+当前每轮关系评分时，配置表会控制：
+
+- 最近取多少条消息参与分析：`recent_window_size`
+- 单次最多降多少：`max_negative_delta`
+- 单次最多升多少：`max_positive_delta`
+
+这意味着：
+
+- `recent_window_size` 越大，越强调最近历史上下文
+- `max_positive_delta` 越小，关系升级越慢
+- `max_negative_delta` 越大，关系回落越明显
+
+#### 5. `update_frequency` 当前字段意义
+
+字段语义上它表示“每多少轮结算一次关系变化”。
+
+但基于当前这版实现，`update_frequency` 主要还体现在返回给上层的上下文中：
+
+- `RelationshipContext.update_frequency`
+
+当前关系推进逻辑已经简化，不再像旧方案那样维护独立的回合累计状态表，所以它现在更接近：
+
+- 已保留的规则字段
+- 可供后续恢复更精细关系系统使用
+
+也就是说：
+
+- 这个字段现在有语义
+- 但当前版本对它的使用还不算重
+
+#### 6. `initial_rv` 当前字段意义
+
+`initial_rv` 表示角色面对新用户时的默认初始关系值。
+
+它的本质是：
+
+- 规则层的初始分
+
+而不是：
+
+- 用户当前阶段
+
+当前系统真正落库的用户阶段仍然是：
+
+- `user_roles.relationship`
+
+在更完整的关系系统里，典型链路应该是：
+
+- 先用 `initial_rv` 作为关系初始值
+- 再把 `rv` 映射成阶段
+- 最终把阶段写入 `user_roles.relationship`
+
+当前简化版实现已经以 `relationship` 作为最终持久状态，因此 `initial_rv` 的意义更多是：
+
+- 配置层保留
+- 供后续恢复 RV 细粒度系统时继续使用
+
+### 字段和 `user_roles.relationship` 的关系
+
+这张表和 `user_roles` 的职责边界要分清：
+
+- `role_relationship_configs`：定义规则
+- `user_roles.relationship`：保存结果
+
+可以用一句话概括：
+
+- `role_relationship_configs` 负责回答“关系应该怎么演进”
+- `user_roles.relationship` 负责回答“这个用户现在进展到哪一步了”
+
+### 推荐理解方式
+
+如果只看当前实现，最重要的是这几个字段：
+
+- `stage_names`
+- `stage_thresholds`
+- `max_negative_delta`
+- `max_positive_delta`
+- `recent_window_size`
+
+其中：
+
+- `stage_names` 决定展示名称
+- `stage_thresholds` 决定升级门槛
+- `max_negative_delta/max_positive_delta` 决定单轮波动上限
+- `recent_window_size` 决定评分参考窗口
+
+而：
+
+- `initial_rv`
+- `update_frequency`
+- `stage_floor_rv`
+- `paid_boost_enabled`
+
+当前更多是“为关系系统完整化保留的规则位”。
+
+## 4.4 `role_images`
+
+用途：管理角色图片资源，包括头像、开场图、阶段图、触发图。
+
+### 字段说明
+
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 主键 | 自增 |
+| `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `image_url` | `VARCHAR(500)` | 图片地址 | 一般为 COS/HTTP 可访问地址 |
+| `image_type` | `VARCHAR(50)` | 图片类型 | 如 `avatar`、`opening`、`stage` |
+| `stage_key` | `VARCHAR(50)` | 阶段标识 | 例如 `friend`、`partner`、`lover`，可空 |
+| `trigger_type` | `VARCHAR(50)` | 触发方式 | 如 `manual`、`first_message`、`stage_change` |
+| `sort_order` | `INT` | 排序 | 同类型下决定展示顺序 |
+| `is_active` | `BOOLEAN` | 是否启用 | 支持软关闭 |
+| `meta_json` | `JSON` | 扩展信息 | 可记录尺寸、描述、触发条件等 |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+| `updated_at` | `DATETIME` | 更新时间 | 更新时自动刷新 |
+
+### 约束
+
+- 主键：`id`
+- 外键：`role_id -> roles.id`
+- 索引：`idx_role_image_order(role_id, image_type, sort_order)`
+
+### 业务说明
+
+- `avatar_url` 是 `roles` 上的单字段头像。
+- `role_images` 是扩展图片池，适合后续支持多图、多阶段、多触发策略。
+- 如果只需要一个头像，可以只用 `roles.avatar_url`。
+- 如果需要“第一条消息发图”“关系升级发图”，优先走 `role_images`。
+
+## 4.5 `user_roles`
+
+用途：记录某个用户与某个角色之间的当前绑定关系和当前关系阶段。
+
+### 字段说明
+
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 主键 | 自增 |
+| `user_id` | `VARCHAR(50)` | 用户业务标识 | 当前主要存 Telegram 用户 ID |
+| `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `relationship` | `INT` | 当前关系阶段 | 当前唯一保留的关系结果字段 |
+| `is_current` | `BOOLEAN` | 是否当前选中角色 | 一个用户理论上同一时刻只应有一个当前角色 |
+| `first_interaction_at` | `DATETIME` | 首次互动时间 | 首次开始聊天时写入 |
+| `last_interaction_at` | `DATETIME` | 最近互动时间 | 每轮互动后更新 |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+
+### 约束
+
+- 主键：`id`
+- 外键：`role_id -> roles.id`
+- 唯一约束：`uk_user_role(user_id, role_id)`
+- 索引：`idx_user_current(user_id, is_current)`
+
+### 业务说明
+
+- 当前系统不再保留独立的 `relationship_states`、`relationship_events` 表。
+- 因此，`user_roles.relationship` 就是用户与角色当前关系阶段的唯一持久化结果。
+- 关系推进逻辑更新后，最终会写回这一个字段。
+
+## 4.6 `chat_history`
+
+用途：记录用户与角色的完整消息明细。
+
+### 字段说明
+
+| 字段 | 类型 | 含义 | 说明 |
+|---|---|---|---|
+| `id` | `INT` | 主键 | 自增 |
+| `user_id` | `VARCHAR(50)` | 用户业务标识 | 与 `user_roles.user_id` 同义 |
+| `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `message_type` | `ENUM` | 消息类型 | `user`、`assistant`、`assistant_image` |
+| `content` | `TEXT` | 消息正文 | 对图片消息可保留描述或占位文本 |
+| `image_url` | `VARCHAR(500)` | 图片地址 | 图片消息时使用 |
+| `emotion_data` | `JSON` | 情绪分析结果 | 用户消息侧常用 |
+| `decision_data` | `JSON` | 回复决策结果 | 角色消息侧常用 |
+| `meta_json` | `JSON` | 扩展字段 | 流式分段、来源、展示控制等都可存放 |
+| `created_at` | `DATETIME` | 创建时间 | 默认当前时间 |
+
+### 约束
+
+- 主键：`id`
+- 外键：`role_id -> roles.id`
+- 索引：`idx_user_role_time(user_id, role_id, created_at)`
+
+### 业务说明
+
+- 当前系统通过 `user_id + role_id + created_at` 组织消息时间线。
+- 历史消息重建、前端聊天展示、RAG 记忆写入，都是从这张表出发。
+- 如果后续继续强化“严格分段展示”，建议每个分段继续作为独立行写入本表。
+
+## 5. 典型数据流
+
+## 5.1 角色列表展示
+
+读取链路：
+
+- 查 `roles`
+- 过滤 `is_active = true`
+- 按需补充 `role_images`
+- 按需补充 `role_relationship_prompts`
+
+## 5.2 用户选择角色
+
+写入链路：
+
+- 查 `roles.id`
+- 在 `user_roles` 中 upsert `(user_id, role_id)`
+- 当前角色置 `is_current = true`
+- 其它角色置 `is_current = false`
+
+## 5.3 生成一轮聊天回复
+
+读取链路：
+
+- 从 `user_roles` 读取当前角色和当前 `relationship`
+- 从 `role_relationship_prompts` 读取该阶段 prompt
+- 从 `roles` 读取角色基础资料
+- 从 `chat_history` 读取最近历史消息
+
+写入链路：
+
+- 用户消息写入 `chat_history`
+- 关系推进后更新 `user_roles.relationship`
+- 角色回复分段后逐条写入 `chat_history`
+
+## 5.4 首图或阶段图展示
+
+读取链路：
+
+- 先查 `role_images`
+- 按 `image_type + stage_key + trigger_type + sort_order` 选择素材
+- 若无扩展图，再回退 `roles.avatar_url`
+
+## 6. 当前关系字段约定
+
+当前默认约定如下：
+
+- `1 = 朋友`
+- `2 = 恋人`
+- `3 = 爱人`
+
+系统中建议统一做一层映射，不要在前后端散落硬编码。
+
+建议统一常量来源：
+
+- 数据库存整数：`1/2/3`
+- 展示层名称：`朋友/恋人/爱人`
+- 内部键名：`friend/partner/lover`
+
+### 当前关系映射的默认规则
+
+在默认关系设计里，阶段和阈值对应关系是：
+
+- `朋友`：`floor_rv = 0`，升级阈值 `40`
+- `恋人`：`floor_rv = 40`，升级阈值 `70`
+- `爱人`：`floor_rv = 70`，升级阈值 `100`
+
+相关默认值定义在 [app/relationship/domain.py](/Users/tchen/workspace/dev_engineer/pro/telegram-ai-character/app/relationship/domain.py)。
+
+## 7. 当前 schema 的优点和边界
+
+## 7.1 优点
+
+- 结构干净，核心状态少。
+- 关系结果只落一处，调试简单。
+- 聊天记录与关系状态分开，后续做 RAG 更清晰。
+- 图片体系和角色体系分离，便于扩展。
+
+## 7.2 当前边界
+
+- `user_roles.relationship` 只存阶段，不存更细粒度 RV 明细。
+- 如果后续要做精细关系轨迹分析，需要重新引入事件日志表。
+- `chat_history` 没有独立会话主表，当前以 `user_id + role_id` 作为逻辑会话。
+
+## 8. 推荐的联表理解方式
+
+最常用的联表方式如下：
+
+### 8.1 查某个用户当前在聊哪个角色
+
+- `user_roles`
+- 关联 `roles`
+- 条件：`user_roles.user_id = ? and user_roles.is_current = true`
+
+### 8.2 查某个用户与某个角色的聊天记录
+
+- `chat_history`
+- 条件：`user_id = ? and role_id = ?`
+- 排序：`created_at asc`
+
+### 8.3 查某个角色当前阶段提示词
+
+- 从 `user_roles` 取 `relationship`
+- 用 `role_id + relationship` 查 `role_relationship_prompts`
+
+### 8.4 查某个角色的图片池
+
+- `role_images`
+- 条件：`role_id = ? and is_active = true`
+- 排序：`image_type, sort_order`
+
+## 9. 维护建议
+
+- 不要再引回旧的 `user_role_relationship_states`、`user_role_relationship_events`，除非明确恢复精细轨迹系统。
+- 如果新增角色，至少要补齐：
+  - `roles`
+  - `role_relationship_prompts`
+  - `role_relationship_configs`
+- 如果新增角色图片能力，优先写 `role_images`，不要继续扩张 `roles` 字段。
+- 如果要做后台管理，角色编辑页至少应该覆盖：
+  - 基础资料：`roles`
+  - 阶段提示词：`role_relationship_prompts`
+  - 关系配置：`role_relationship_configs`
+  - 图片资源：`role_images`
