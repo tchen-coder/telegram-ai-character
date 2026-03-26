@@ -13,24 +13,9 @@
 - `user_roles`
 - `chat_history`
 
-## 2. 设计原则
+## 2. 表级关系总览
 
-- `roles` 是角色主表，所有角色配置都围绕它展开。
-- `role_relationship_prompts` 存不同关系阶段的提示词。
-- `role_relationship_configs` 存不同角色的关系演进规则。
-- `role_images` 存角色图片资源。
-- `user_roles` 存用户与角色之间的当前关系状态。
-- `chat_history` 存用户与角色的消息明细。
-
-核心思路是：
-
-- 角色定义和用户状态分离。
-- 关系规则和关系结果分离。
-- 聊天记录单独保存，不把消息塞进用户关系表。
-
-## 3. 表级关系总览
-
-### 3.1 外键关系
+### 2.1 外键关系
 
 - `role_relationship_prompts.role_id -> roles.id`
 - `role_relationship_configs.role_id -> roles.id`
@@ -38,7 +23,7 @@
 - `user_roles.role_id -> roles.id`
 - `chat_history.role_id -> roles.id`
 
-### 3.2 业务基数
+### 2.2 业务基数
 
 - `roles` 1 : N `role_relationship_prompts`
 - `roles` 1 : 1 `role_relationship_configs`
@@ -46,16 +31,16 @@
 - `roles` 1 : N `user_roles`
 - `roles` 1 : N `chat_history`
 
-### 3.3 关键关联说明
+### 2.3 关键关联说明
 
 - 一个角色可以有多个关系阶段提示词，但同一个关系阶段只能有一条生效记录。
 - 一个角色只能有一套关系演进配置。
 - 一个用户和一个角色只有一条 `user_roles` 绑定记录。
 - 一段聊天历史通过 `user_id + role_id` 聚合，不再额外维护独立会话主表。
 
-## 4. 各表详细说明
+## 3. 各表详细说明
 
-## 4.1 `roles`
+## 3.1 `roles`
 
 用途：角色主表，定义角色的基础信息和默认能力。
 
@@ -87,7 +72,7 @@
 - 代码内部表关联统一使用 `roles.id`。
 - 前端展示和外部同步时，可以优先暴露 `role_id`。
 
-## 4.2 `role_relationship_prompts`
+## 3.2 `role_relationship_prompts`
 
 用途：保存角色在不同关系阶段下的提示词。
 
@@ -115,7 +100,7 @@
 - `roles.system_prompt` 是基础提示词。
 - `role_relationship_prompts.prompt_text` 是关系阶段提示词。
 
-## 4.3 `role_relationship_configs`
+## 3.3 `role_relationship_configs`
 
 用途：定义角色关系系统的演进规则，而不是保存用户当前关系结果。
 
@@ -141,11 +126,7 @@
 ### 约束
 
 - 主键：`id`
-
-
-
-
- 外键：`role_id -> roles.id`
+- 外键：`role_id -> roles.id`
 - 唯一约束：`uk_role_relationship_config(role_id)`
 - 索引：`idx_role_relationship_config(role_id)`
 
@@ -290,32 +271,6 @@
 - `role_relationship_configs` 负责回答“关系应该怎么演进”
 - `user_roles.relationship` 负责回答“这个用户现在进展到哪一步了”
 
-### 推荐理解方式
-
-如果只看当前实现，最重要的是这几个字段：
-
-- `stage_names`
-- `stage_thresholds`
-- `max_negative_delta`
-- `max_positive_delta`
-- `recent_window_size`
-
-其中：
-
-- `stage_names` 决定展示名称
-- `stage_thresholds` 决定升级门槛
-- `max_negative_delta/max_positive_delta` 决定单轮波动上限
-- `recent_window_size` 决定评分参考窗口
-
-而：
-
-- `initial_rv`
-- `update_frequency`
-- `stage_floor_rv`
-- `paid_boost_enabled`
-
-当前更多是“为关系系统完整化保留的规则位”。
-
 ## 4.4 `role_images`
 
 用途：管理角色图片资源，包括头像、开场图、阶段图、触发图。
@@ -409,128 +364,3 @@
 - 当前系统通过 `user_id + role_id + created_at` 组织消息时间线。
 - 历史消息重建、前端聊天展示、RAG 记忆写入，都是从这张表出发。
 - 如果后续继续强化“严格分段展示”，建议每个分段继续作为独立行写入本表。
-
-## 5. 典型数据流
-
-## 5.1 角色列表展示
-
-读取链路：
-
-- 查 `roles`
-- 过滤 `is_active = true`
-- 按需补充 `role_images`
-- 按需补充 `role_relationship_prompts`
-
-## 5.2 用户选择角色
-
-写入链路：
-
-- 查 `roles.id`
-- 在 `user_roles` 中 upsert `(user_id, role_id)`
-- 当前角色置 `is_current = true`
-- 其它角色置 `is_current = false`
-
-## 5.3 生成一轮聊天回复
-
-读取链路：
-
-- 从 `user_roles` 读取当前角色和当前 `relationship`
-- 从 `role_relationship_prompts` 读取该阶段 prompt
-- 从 `roles` 读取角色基础资料
-- 从 `chat_history` 读取最近历史消息
-
-写入链路：
-
-- 用户消息写入 `chat_history`
-- 关系推进后更新 `user_roles.relationship`
-- 角色回复分段后逐条写入 `chat_history`
-
-## 5.4 首图或阶段图展示
-
-读取链路：
-
-- 先查 `role_images`
-- 按 `image_type + stage_key + trigger_type + sort_order` 选择素材
-- 若无扩展图，再回退 `roles.avatar_url`
-
-## 6. 当前关系字段约定
-
-当前默认约定如下：
-
-- `1 = 朋友`
-- `2 = 恋人`
-- `3 = 爱人`
-
-系统中建议统一做一层映射，不要在前后端散落硬编码。
-
-建议统一常量来源：
-
-- 数据库存整数：`1/2/3`
-- 展示层名称：`朋友/恋人/爱人`
-- 内部键名：`friend/partner/lover`
-
-### 当前关系映射的默认规则
-
-在默认关系设计里，阶段和阈值对应关系是：
-
-- `朋友`：`floor_rv = 0`，升级阈值 `40`
-- `恋人`：`floor_rv = 40`，升级阈值 `70`
-- `爱人`：`floor_rv = 70`，升级阈值 `100`
-
-相关默认值定义在 [app/relationship/domain.py](/Users/tchen/workspace/dev_engineer/pro/telegram-ai-character/app/relationship/domain.py)。
-
-## 7. 当前 schema 的优点和边界
-
-## 7.1 优点
-
-- 结构干净，核心状态少。
-- 关系结果只落一处，调试简单。
-- 聊天记录与关系状态分开，后续做 RAG 更清晰。
-- 图片体系和角色体系分离，便于扩展。
-
-## 7.2 当前边界
-
-- `user_roles.relationship` 只存阶段，不存更细粒度 RV 明细。
-- 如果后续要做精细关系轨迹分析，需要重新引入事件日志表。
-- `chat_history` 没有独立会话主表，当前以 `user_id + role_id` 作为逻辑会话。
-
-## 8. 推荐的联表理解方式
-
-最常用的联表方式如下：
-
-### 8.1 查某个用户当前在聊哪个角色
-
-- `user_roles`
-- 关联 `roles`
-- 条件：`user_roles.user_id = ? and user_roles.is_current = true`
-
-### 8.2 查某个用户与某个角色的聊天记录
-
-- `chat_history`
-- 条件：`user_id = ? and role_id = ?`
-- 排序：`created_at asc`
-
-### 8.3 查某个角色当前阶段提示词
-
-- 从 `user_roles` 取 `relationship`
-- 用 `role_id + relationship` 查 `role_relationship_prompts`
-
-### 8.4 查某个角色的图片池
-
-- `role_images`
-- 条件：`role_id = ? and is_active = true`
-- 排序：`image_type, sort_order`
-
-## 9. 维护建议
-
-- 不要再引回旧的 `user_role_relationship_states`、`user_role_relationship_events`，除非明确恢复精细轨迹系统。
-- 如果新增角色，至少要补齐：
-  - `roles`
-  - `role_relationship_prompts`
-  - `role_relationship_configs`
-- 如果新增角色图片能力，优先写 `role_images`，不要继续扩张 `roles` 字段。
-- 如果要做后台管理，角色编辑页至少应该覆盖：
-  - 基础资料：`roles`
-  - 阶段提示词：`role_relationship_prompts`
-  - 关系配置：`role_relationship_configs`
-  - 图片资源：`role_images`
