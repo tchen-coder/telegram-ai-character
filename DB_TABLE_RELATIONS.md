@@ -174,6 +174,7 @@
 | `id` | `INT` | 主键 | 自增 |
 | `user_id` | `VARCHAR(50)` | 用户业务标识 | 当前主要存 Telegram 用户 ID |
 | `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `real_user_id` | `VARCHAR(50)` | 实际用户标识 | 预留字段，用于后续接统一账号或真实用户体系 |
 | `relationship` | `INT` | 当前关系阶段 | 当前唯一保留的关系结果字段 |
 | `is_current` | `BOOLEAN` | 是否当前选中角色 | 一个用户理论上同一时刻只应有一个当前角色 |
 | `first_interaction_at` | `DATETIME` | 首次互动时间 | 首次开始聊天时写入 |
@@ -204,6 +205,8 @@
 | `id` | `INT` | 主键 | 自增 |
 | `user_id` | `VARCHAR(50)` | 用户业务标识 | 与 `user_roles.user_id` 同义 |
 | `role_id` | `INT` | 关联角色主键 | 外键到 `roles.id` |
+| `group_seq` | `INT` | 消息组序号 | 同一 `user_id + role_id` 下持续递增，用于标记一轮完整发送 |
+| `timestamp` | `BIGINT` | 毫秒时间戳 | 用于稳定排序和前端重放 |
 | `message_type` | `ENUM` | 消息类型 | `user`、`assistant`、`assistant_image` |
 | `content` | `TEXT` | 消息正文 | 对图片消息可保留描述或占位文本 |
 | `image_url` | `VARCHAR(500)` | 图片地址 | 图片消息时使用 |
