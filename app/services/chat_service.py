@@ -119,6 +119,8 @@ class ChatService:
         user_id: str,
         role_id: int,
         content: str,
+        *,
+        group_seq: Optional[int] = None,
         decision_data: Optional[dict] = None,
     ) -> List[ChatMessage]:
         """按展示分段保存 AI 回复消息。"""
@@ -130,19 +132,19 @@ class ChatService:
         saved_messages: List[ChatMessage] = []
         total = len(segments)
         base_timestamp = self._now_timestamp_ms()
-        group_seq = await self.chat_repo.get_next_group_seq(user_id, role_id)
+        resolved_group_seq = group_seq or await self.chat_repo.get_next_group_seq(user_id, role_id)
 
         for index, segment in enumerate(segments, start=1):
             segment_decision = copy.deepcopy(decision_data) if isinstance(decision_data, dict) else {}
             segment_decision["raw_response"] = content
             segment_decision["segment_index"] = index
             segment_decision["segment_total"] = total
-            segment_decision["group_seq"] = group_seq
+            segment_decision["group_seq"] = resolved_group_seq
 
             chat = await self.chat_repo.save_message(
                 user_id=user_id,
                 role_id=role_id,
-                group_seq=group_seq,
+                group_seq=resolved_group_seq,
                 timestamp=base_timestamp + index - 1,
                 message_type=MessageType.ASSISTANT,
                 content=segment,
@@ -152,6 +154,78 @@ class ChatService:
 
         await self.session.commit()
         return saved_messages
+
+    async def get_conversation_turns(
+        self,
+        user_id: str,
+        role_id: int,
+        *,
+        before_group_seq: Optional[int] = None,
+        limit: int = 10,
+    ) -> dict:
+        group_seqs, messages, has_more, next_before_group_seq = await self.chat_repo.get_conversation_turns(
+            user_id=user_id,
+            role_id=role_id,
+            before_group_seq=before_group_seq,
+            limit=limit,
+        )
+
+        turns_by_seq = {
+            group_seq: {
+                "group_seq": group_seq,
+                "messages": [],
+                "user_message": None,
+                "assistant_messages": [],
+                "last_timestamp": None,
+            }
+            for group_seq in group_seqs
+        }
+
+        for message in messages:
+            chat_message = ChatMessage.from_orm(message)
+            turn = turns_by_seq.get(int(chat_message.group_seq or 0))
+            if not turn:
+                continue
+
+            turn["messages"].append(chat_message)
+            turn["last_timestamp"] = chat_message.timestamp
+
+            message_type = (
+                chat_message.message_type.value
+                if hasattr(chat_message.message_type, "value")
+                else str(chat_message.message_type)
+            )
+            if message_type == MessageType.USER.value and turn["user_message"] is None:
+                turn["user_message"] = chat_message
+            else:
+                turn["assistant_messages"].append(chat_message)
+
+        return {
+            "turns": [turns_by_seq[group_seq] for group_seq in group_seqs],
+            "messages": [ChatMessage.from_orm(message) for message in messages],
+            "has_more": has_more,
+            "next_before_group_seq": next_before_group_seq,
+        }
+
+    async def get_conversation_page(
+        self,
+        user_id: str,
+        role_id: int,
+        *,
+        before_message_id: Optional[int] = None,
+        limit: int = 10,
+    ) -> dict:
+        messages, has_more, next_before_message_id = await self.chat_repo.get_conversation_page(
+            user_id=user_id,
+            role_id=role_id,
+            before_message_id=before_message_id,
+            limit=limit,
+        )
+        return {
+            "messages": [ChatMessage.from_orm(message) for message in messages],
+            "has_more": has_more,
+            "next_before_message_id": next_before_message_id,
+        }
 
     async def get_conversation_history(
         self, user_id: str, role_id: int, limit: int = 20

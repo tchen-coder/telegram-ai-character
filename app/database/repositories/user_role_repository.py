@@ -1,7 +1,7 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, and_
+from sqlalchemy import delete, select, and_, func, desc
 
 from app.database.models import UserRole
 from app.database.repositories.base import BaseRepository
@@ -29,6 +29,29 @@ class UserRoleRepository(BaseRepository[UserRole]):
             select(UserRole).where(UserRole.user_id == user_id).order_by(UserRole.created_at)
         )
         return result.scalars().all()
+
+    async def get_user_roles_paginated(
+        self,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+    ) -> Tuple[List[UserRole], int]:
+        offset = max(page - 1, 0) * page_size
+        total_result = await self.session.execute(
+            select(func.count()).select_from(UserRole).where(UserRole.user_id == user_id)
+        )
+        total = int(total_result.scalar_one() or 0)
+
+        sort_timestamp = func.coalesce(UserRole.last_interaction_at, UserRole.created_at)
+        result = await self.session.execute(
+            select(UserRole)
+            .where(UserRole.user_id == user_id)
+            .order_by(desc(sort_timestamp), desc(UserRole.created_at), desc(UserRole.id))
+            .offset(offset)
+            .limit(page_size)
+        )
+        return result.scalars().all(), total
 
     async def get_user_role(self, user_id: str, role_id: int) -> Optional[UserRole]:
         """获取用户的特定角色关系"""

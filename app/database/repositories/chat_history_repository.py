@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select, and_, desc, asc, func
@@ -78,14 +78,137 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         messages = result.scalars().all()
         return list(reversed(messages))
 
+    async def get_latest_assistant_message(
+        self,
+        user_id: str,
+        role_id: int,
+    ) -> Optional[ChatHistory]:
+        result = await self.session.execute(
+            select(ChatHistory)
+            .where(
+                and_(
+                    ChatHistory.user_id == user_id,
+                    ChatHistory.role_id == role_id,
+                    ChatHistory.message_type == MessageType.ASSISTANT,
+                )
+            )
+            .order_by(desc(ChatHistory.timestamp), desc(ChatHistory.id))
+            .limit(1)
+        )
+        return result.scalars().first()
+
+    async def get_conversation_turns(
+        self,
+        user_id: str,
+        role_id: int,
+        *,
+        before_group_seq: Optional[int] = None,
+        limit: int = 10,
+    ) -> Tuple[List[int], List[ChatHistory], bool, Optional[int]]:
+        conditions = [
+            ChatHistory.user_id == user_id,
+            ChatHistory.role_id == role_id,
+            ChatHistory.group_seq.is_not(None),
+        ]
+        if before_group_seq is not None:
+            conditions.append(ChatHistory.group_seq < before_group_seq)
+
+        group_result = await self.session.execute(
+            select(ChatHistory.group_seq)
+            .where(and_(*conditions))
+            .group_by(ChatHistory.group_seq)
+            .order_by(desc(ChatHistory.group_seq))
+            .limit(limit + 1)
+        )
+        group_seqs = [int(value) for value in group_result.scalars().all() if value is not None]
+        has_more = len(group_seqs) > limit
+        selected_group_seqs_desc = group_seqs[:limit]
+
+        if not selected_group_seqs_desc:
+            return [], [], False, None
+
+        selected_group_seqs = list(reversed(selected_group_seqs_desc))
+        next_before_group_seq = selected_group_seqs[0] if has_more else None
+
+        result = await self.session.execute(
+            select(ChatHistory)
+            .where(
+                and_(
+                    ChatHistory.user_id == user_id,
+                    ChatHistory.role_id == role_id,
+                    ChatHistory.group_seq.in_(selected_group_seqs),
+                )
+            )
+            .order_by(
+                asc(ChatHistory.group_seq),
+                asc(ChatHistory.timestamp),
+                asc(ChatHistory.id),
+            )
+        )
+        return selected_group_seqs, result.scalars().all(), has_more, next_before_group_seq
+
+    async def get_group_seq_by_message_id(
+        self,
+        user_id: str,
+        role_id: int,
+        message_id: int,
+    ) -> Optional[int]:
+        result = await self.session.execute(
+            select(ChatHistory.group_seq)
+            .where(
+                and_(
+                    ChatHistory.id == message_id,
+                    ChatHistory.user_id == user_id,
+                    ChatHistory.role_id == role_id,
+                )
+            )
+            .limit(1)
+        )
+        value = result.scalar_one_or_none()
+        if value is None:
+            return None
+        return int(value)
+
+    async def get_conversation_page(
+        self,
+        user_id: str,
+        role_id: int,
+        *,
+        before_message_id: Optional[int] = None,
+        limit: int = 10,
+    ) -> Tuple[List[ChatHistory], bool, Optional[int]]:
+        conditions = [
+            ChatHistory.user_id == user_id,
+            ChatHistory.role_id == role_id,
+        ]
+        if before_message_id is not None:
+            conditions.append(ChatHistory.id < before_message_id)
+
+        result = await self.session.execute(
+            select(ChatHistory)
+            .where(and_(*conditions))
+            .order_by(desc(ChatHistory.id))
+            .limit(limit + 1)
+        )
+        rows = result.scalars().all()
+        has_more = len(rows) > limit
+        selected_rows_desc = rows[:limit]
+
+        if not selected_rows_desc:
+            return [], False, None
+
+        selected_rows = list(reversed(selected_rows_desc))
+        next_before_message_id = selected_rows[0].id if has_more else None
+        return selected_rows, has_more, next_before_message_id
+
     async def count_messages(self, user_id: str, role_id: int) -> int:
         """统计用户与特定角色的消息数"""
         result = await self.session.execute(
-            select(ChatHistory).where(
+            select(func.count()).select_from(ChatHistory).where(
                 and_(ChatHistory.user_id == user_id, ChatHistory.role_id == role_id)
             )
         )
-        return len(result.scalars().all())
+        return int(result.scalar_one() or 0)
 
     async def get_user_history(
         self,

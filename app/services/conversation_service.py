@@ -92,6 +92,7 @@ class ConversationService:
             user_id=user_id,
             role_id=current_role.id,
             content=response_text,
+            group_seq=user_message.group_seq,
             decision_data=decision.model_dump(),
         )
         for assistant_message in assistant_messages:
@@ -116,6 +117,7 @@ class ConversationService:
             "relationship_label": relationship_context.relationship_label,
             "emotion": emotion,
             "decision": decision,
+            "user_message": user_message,
             "assistant_message": assistant_message,
             "assistant_messages": assistant_messages,
             "response_text": response_text,

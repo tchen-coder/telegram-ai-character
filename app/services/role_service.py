@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -268,6 +268,18 @@ class RoleService:
         roles = await self.role_repo.get_active_roles()
         return [await self._build_role_info(role) for role in roles]
 
+    async def get_active_roles_page(
+        self,
+        *,
+        page: int,
+        page_size: int,
+    ) -> Tuple[List[RoleInfo], int]:
+        roles, total = await self.role_repo.get_active_roles_paginated(
+            page=page,
+            page_size=page_size,
+        )
+        return [await self._build_role_info(role) for role in roles], total
+
     async def get_all_roles(self) -> List[RoleInfo]:
         roles = await self.role_repo.get_all_roles()
         return [await self._build_role_info(role) for role in roles]
@@ -318,6 +330,33 @@ class RoleService:
                 role_info.relationship_label = relationship_label(role_info.relationship)
                 roles.append(role_info)
         return roles
+
+    async def get_user_roles_page(
+        self,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+    ) -> Tuple[List[RoleInfo], int]:
+        user_roles, total = await self.user_role_repo.get_user_roles_paginated(
+            user_id,
+            page=page,
+            page_size=page_size,
+        )
+        roles = []
+        for user_role in user_roles:
+            role = await self.role_repo.get_by_id(user_role.role_id)
+            if not role:
+                continue
+            role_info = await self._build_role_info(role)
+            role_info.relationship = await self._resolve_user_relationship(
+                user_id=user_id,
+                role_id=user_role.role_id,
+                fallback=user_role.relationship,
+            )
+            role_info.relationship_label = relationship_label(role_info.relationship)
+            roles.append(role_info)
+        return roles, total
 
     async def get_user_role_relationship(self, user_id: str, role_id: int) -> int:
         user_role = await self.user_role_repo.get_user_role(user_id, role_id)

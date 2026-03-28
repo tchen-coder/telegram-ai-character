@@ -58,18 +58,33 @@ class BotAPIHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/roles":
             user_id = get_query_param(self.path, "user_id")
-            self._run_and_write(list_roles(user_id))
+            page = parse_optional_int(get_query_param(self.path, "page"))
+            page_size = parse_optional_int(get_query_param(self.path, "page_size"))
+            self._run_and_write(list_roles(user_id, page, page_size))
             return
 
         if parsed.path == "/api/myroles":
             user_id = get_query_param(self.path, "user_id")
-            self._run_and_write(list_user_roles(user_id))
+            page = parse_optional_int(get_query_param(self.path, "page"))
+            page_size = parse_optional_int(get_query_param(self.path, "page_size"))
+            self._run_and_write(list_user_roles(user_id, page, page_size))
             return
 
         if parsed.path == "/api/conversations":
             user_id = get_query_param(self.path, "user_id")
             role_id = parse_optional_int(get_query_param(self.path, "role_id"))
-            self._run_and_write(get_conversation_history(user_id, role_id))
+            before_group_seq = parse_optional_int(get_query_param(self.path, "before_group_seq"))
+            before_message_id = parse_optional_int(get_query_param(self.path, "before_message_id"))
+            limit = parse_optional_int(get_query_param(self.path, "limit"))
+            self._run_and_write(
+                get_conversation_history(
+                    user_id,
+                    role_id,
+                    before_group_seq=before_group_seq,
+                    before_message_id=before_message_id,
+                    limit=limit,
+                )
+            )
             return
 
         if parsed.path == "/api/admin/roles":

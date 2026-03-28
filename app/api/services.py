@@ -23,6 +23,11 @@ from app.relationship_prompts import normalize_relationship, relationship_label
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PAGE_SIZE = 10
+MAX_PAGE_SIZE = 50
+DEFAULT_CONVERSATION_MESSAGE_LIMIT = 10
+MAX_CONVERSATION_MESSAGE_LIMIT = 50
+
 
 def _extract_latest_role_reply(messages: list) -> Optional[str]:
     for message in reversed(messages or []):
@@ -47,25 +52,66 @@ def _should_push_to_telegram(push_to_telegram: Optional[bool]) -> bool:
     return str(push_to_telegram).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
-async def list_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
+def _normalize_page(value: Optional[int]) -> int:
+    return max(1, int(value or 1))
+
+
+def _normalize_page_size(value: Optional[int], default: int = DEFAULT_PAGE_SIZE) -> int:
+    return max(1, min(MAX_PAGE_SIZE, int(value or default)))
+
+
+def _normalize_conversation_message_limit(value: Optional[int]) -> int:
+    return max(1, min(MAX_CONVERSATION_MESSAGE_LIMIT, int(value or DEFAULT_CONVERSATION_MESSAGE_LIMIT)))
+
+
+def _build_pagination_payload(*, page: int, page_size: int, total: int) -> dict:
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_more": page * page_size < total,
+    }
+
+
+def _serialize_conversation_turn(turn: dict) -> dict:
+    return {
+        "group_seq": turn.get("group_seq"),
+        "last_timestamp": turn.get("last_timestamp"),
+        "user_message": serialize_message(turn["user_message"]) if turn.get("user_message") else None,
+        "assistant_messages": [
+            serialize_message(message) for message in turn.get("assistant_messages", [])
+        ],
+        "messages": [serialize_message(message) for message in turn.get("messages", [])],
+    }
+
+
+async def list_roles(
+    user_id: Optional[str],
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> tuple[HTTPStatus, bytes]:
+    resolved_page = _normalize_page(page)
+    resolved_page_size = _normalize_page_size(page_size)
     db_manager = get_db_manager()
     async with db_manager.async_session() as session:
         role_service = RoleService(session)
         chat_service = ChatService(session)
-        roles = await role_service.get_all_active_roles()
+        roles, total = await role_service.get_active_roles_page(
+            page=resolved_page,
+            page_size=resolved_page_size,
+        )
         current_role = await role_service.get_user_current_role(user_id) if user_id else None
 
-        # 批量查询每个角色的最新回复
         roles_with_latest = []
         for role in roles:
             latest_reply = None
             if user_id:
-                latest_messages = await chat_service.get_latest_messages(
+                latest_message = await chat_service.chat_repo.get_latest_assistant_message(
                     user_id=user_id,
                     role_id=role.id,
-                    limit=12,
                 )
-                latest_reply = _extract_latest_role_reply(latest_messages)
+                if latest_message:
+                    latest_reply = (getattr(latest_message, "content", "") or "").strip() or None
             roles_with_latest.append((role, latest_reply))
 
     return build_json_response(
@@ -77,11 +123,20 @@ async def list_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
                 for role, latest_reply in roles_with_latest
             ],
             "current_role_id": current_role.id if current_role else None,
+            "pagination": _build_pagination_payload(
+                page=resolved_page,
+                page_size=resolved_page_size,
+                total=total,
+            ),
         },
     )
 
 
-async def list_user_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
+async def list_user_roles(
+    user_id: Optional[str],
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> tuple[HTTPStatus, bytes]:
     if not user_id:
         return build_json_response(
             ok=False,
@@ -89,22 +144,28 @@ async def list_user_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
             status=HTTPStatus.BAD_REQUEST,
         )
 
+    resolved_page = _normalize_page(page)
+    resolved_page_size = _normalize_page_size(page_size)
     db_manager = get_db_manager()
     async with db_manager.async_session() as session:
         role_service = RoleService(session)
         chat_service = ChatService(session)
-        roles = await role_service.get_user_roles(user_id)
+        roles, total = await role_service.get_user_roles_page(
+            user_id,
+            page=resolved_page,
+            page_size=resolved_page_size,
+        )
         current_role = await role_service.get_user_current_role(user_id)
 
-        # 批量查询每个角色的最新回复
         roles_with_latest = []
         for role in roles:
-            latest_messages = await chat_service.get_latest_messages(
+            latest_message = await chat_service.chat_repo.get_latest_assistant_message(
                 user_id=user_id,
                 role_id=role.id,
-                limit=12,
             )
-            latest_reply = _extract_latest_role_reply(latest_messages)
+            latest_reply = None
+            if latest_message:
+                latest_reply = (getattr(latest_message, "content", "") or "").strip() or None
             roles_with_latest.append((role, latest_reply))
 
     return build_json_response(
@@ -116,6 +177,11 @@ async def list_user_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
                 for role, latest_reply in roles_with_latest
             ],
             "current_role_id": current_role.id if current_role else None,
+            "pagination": _build_pagination_payload(
+                page=resolved_page,
+                page_size=resolved_page_size,
+                total=total,
+            ),
         },
     )
 
@@ -275,6 +341,9 @@ async def select_role(
 async def get_conversation_history(
     user_id: Optional[str],
     role_id: Optional[int],
+    before_group_seq: Optional[int] = None,
+    before_message_id: Optional[int] = None,
+    limit: Optional[int] = None,
 ) -> tuple[HTTPStatus, bytes]:
     if not user_id:
         return build_json_response(
@@ -290,6 +359,7 @@ async def get_conversation_history(
             status=HTTPStatus.BAD_REQUEST,
         )
 
+    resolved_limit = _normalize_conversation_message_limit(limit)
     db_manager = get_db_manager()
     async with db_manager.async_session() as session:
         role_service = RoleService(session)
@@ -305,12 +375,27 @@ async def get_conversation_history(
         current_relationship = await role_service.get_user_role_relationship(user_id, role_id)
         role.relationship = normalize_relationship(current_relationship)
         role.relationship_label = relationship_label(role.relationship)
-        messages = await chat_service.get_conversation_history(user_id=user_id, role_id=role_id, limit=60)
+        resolved_before_group_seq = before_group_seq
+        if resolved_before_group_seq is None and before_message_id is not None:
+            resolved_before_group_seq = await chat_service.chat_repo.get_group_seq_by_message_id(
+                user_id=user_id,
+                role_id=role_id,
+                message_id=before_message_id,
+            )
+
+        conversation = await chat_service.get_conversation_turns(
+            user_id=user_id,
+            role_id=role_id,
+            before_group_seq=resolved_before_group_seq,
+            limit=resolved_limit,
+        )
+        messages = list(conversation.get("messages", []))
         opening_message = None
         has_opening_image = any(
-            chat_service.is_opening_image_message(message) for message in messages
+            chat_service.is_opening_image_message(message)
+            for message in messages
         )
-        if not has_opening_image:
+        if resolved_before_group_seq is None and not has_opening_image:
             opening_image = await role_service.get_role_opening_image(role_id)
             if opening_image:
                 opening_message = await chat_service.save_assistant_image_message(
@@ -324,8 +409,19 @@ async def get_conversation_history(
                         "source": "role_opening",
                     },
                 )
+                messages = [opening_message] + messages
 
-        messages = chat_service.ensure_opening_image_first(messages, opening_message)
+    logger.info(
+        "conversation history resolved: user_id=%s role_id=%s limit=%s before_group_seq=%s before_message_id=%s has_more=%s next_before_group_seq=%s messages=%s",
+        user_id,
+        role_id,
+        resolved_limit,
+        resolved_before_group_seq,
+        before_message_id,
+        bool(conversation.get("has_more")),
+        conversation.get("next_before_group_seq"),
+        len(messages),
+    )
 
     return build_json_response(
         ok=True,
@@ -333,6 +429,12 @@ async def get_conversation_history(
         data={
             "role": serialize_role(role),
             "messages": [serialize_message(message) for message in messages],
+            "pagination": {
+                "limit": resolved_limit,
+                "has_more": bool(conversation.get("has_more")),
+                "next_before_group_seq": conversation.get("next_before_group_seq"),
+                "next_before_message_id": conversation.get("next_before_group_seq"),
+            },
         },
     )
 
@@ -390,10 +492,7 @@ async def send_chat_message(
                 if hasattr(result["role"], "model_copy")
                 else result["role"]
             ),
-            "user_message": {
-                "message_type": "user",
-                "content": normalized_content,
-            },
+            "user_message": serialize_message(result["user_message"]),
             "assistant_message": serialize_message(result["assistant_message"]),
             "assistant_messages": [
                 serialize_message(message) for message in result.get("assistant_messages", [])
