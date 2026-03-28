@@ -136,6 +136,9 @@ class ConversationService:
             or "403 Forbidden" in exc_text
             or "StatusCode.PERMISSION_DENIED" in exc_text
             or "http2 header with status: 403" in exc_text
+            or "The caller does not have permission to execute the specified operation" in exc_text
+            or "API key is currently blocked" in exc_text
+            or "Blocked due to API key leak" in exc_text
         )
 
     def _build_local_fallback_response(self, *, role_name: str, user_text: str) -> str:

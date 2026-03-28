@@ -57,24 +57,16 @@ def serialize_role(role: Any) -> Dict[str, Any]:
     current_relationship = normalize_relationship(getattr(role, "relationship", 1))
     return {
         "id": role.id,
+        "role_id": getattr(role, "role_id", role.id),
         "name": role.role_name,
         "description": role.scenario or "暂无描述",
         "relationship": current_relationship,
         "relationship_label": getattr(role, "relationship_label", None)
         or relationship_label(current_relationship),
         "system_prompt": getattr(role, "system_prompt", "") or "",
-        "system_prompt_friend": relationship_prompt_map.get(
-            1,
-            getattr(role, "system_prompt_friend", None),
-        ),
-        "system_prompt_partner": relationship_prompt_map.get(
-            2,
-            getattr(role, "system_prompt_partner", None),
-        ),
-        "system_prompt_lover": relationship_prompt_map.get(
-            3,
-            getattr(role, "system_prompt_lover", None),
-        ),
+        "system_prompt_friend": relationship_prompt_map.get(1, ""),
+        "system_prompt_partner": relationship_prompt_map.get(2, ""),
+        "system_prompt_lover": relationship_prompt_map.get(3, ""),
         "greeting_message": role.greeting_message or "",
         "avatar_url": cos_image_service.sign_image_url(role.avatar_url, avatar_meta),
         "raw_avatar_url": role.avatar_url,
@@ -110,6 +102,8 @@ def serialize_message(message: Any) -> Dict[str, Any]:
         "id": message.id,
         "role_id": getattr(message, "role_id", None),
         "user_id": getattr(message, "user_id", None),
+        "group_seq": getattr(message, "group_seq", None),
+        "timestamp": getattr(message, "timestamp", None),
         "message_type": message_type,
         "content": message.content,
         "image_url": cos_image_service.sign_image_url(

@@ -8,7 +8,6 @@ import asyncio
 import sys
 from sqlalchemy import inspect, text
 from app.database.connection import DatabaseManager
-from app.database.models import Base, ChatHistory, Role, RoleImage, RoleRelationshipPrompt, UserRole
 from app.config import get_settings
 
 async def check_database_schema():
@@ -32,6 +31,7 @@ async def check_database_schema():
                 "role_images",
                 "user_roles",
                 "chat_history",
+                "role_relationship_configs",
             }
 
             print("\n【表存在性检查】")
@@ -47,8 +47,7 @@ async def check_database_schema():
                 print("\n  roles 表:")
                 columns = {col["name"] for col in inspector.get_columns("roles")}
                 expected_cols = {
-                    "id", "role_name", "system_prompt",
-                    "system_prompt_friend", "system_prompt_partner", "system_prompt_lover",
+                    "id", "role_id", "role_name", "system_prompt",
                     "scenario", "greeting_message", "avatar_url", "tags",
                     "is_active", "created_at", "updated_at"
                 }
@@ -86,7 +85,7 @@ async def check_database_schema():
                 print("\n  user_roles 表:")
                 columns = {col["name"] for col in inspector.get_columns("user_roles")}
                 expected_cols = {
-                    "id", "user_id", "role_id", "relationship", "is_current",
+                    "id", "user_id", "real_user_id", "role_id", "relationship", "is_current",
                     "first_interaction_at", "last_interaction_at", "created_at"
                 }
                 for col in sorted(expected_cols):
@@ -98,9 +97,21 @@ async def check_database_schema():
                 print("\n  chat_history 表:")
                 columns = {col["name"] for col in inspector.get_columns("chat_history")}
                 expected_cols = {
-                    "id", "user_id", "role_id", "message_type", "content",
+                    "id", "user_id", "role_id", "group_seq", "timestamp", "message_type", "content",
                     "image_url", "emotion_data", "decision_data", "meta_json",
                     "created_at"
+                }
+                for col in sorted(expected_cols):
+                    status = "✓" if col in columns else "✗"
+                    print(f"    {status} {col}")
+
+            if "role_relationship_configs" in existing_tables:
+                print("\n  role_relationship_configs 表:")
+                columns = {col["name"] for col in inspector.get_columns("role_relationship_configs")}
+                expected_cols = {
+                    "id", "role_id", "initial_rv", "update_frequency", "max_negative_delta",
+                    "max_positive_delta", "recent_window_size", "stage_names", "stage_floor_rv",
+                    "stage_thresholds", "paid_boost_enabled", "meta_json", "created_at", "updated_at"
                 }
                 for col in sorted(expected_cols):
                     status = "✓" if col in columns else "✗"

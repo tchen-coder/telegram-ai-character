@@ -1,5 +1,6 @@
 from http import HTTPStatus
 from typing import Optional
+import logging
 import re
 
 from telegram import Bot
@@ -20,6 +21,8 @@ from app.state_machine import state_machine
 from app.telegram_request import ConfigurableHTTPXRequest
 from app.relationship_prompts import normalize_relationship, relationship_label
 
+logger = logging.getLogger(__name__)
+
 
 def _extract_latest_role_reply(messages: list) -> Optional[str]:
     for message in reversed(messages or []):
@@ -34,6 +37,14 @@ def _extract_latest_role_reply(messages: list) -> Optional[str]:
         if content:
             return content
     return None
+
+
+def _should_push_to_telegram(push_to_telegram: Optional[bool]) -> bool:
+    if push_to_telegram is None:
+        return True
+    if isinstance(push_to_telegram, bool):
+        return push_to_telegram
+    return str(push_to_telegram).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 async def list_roles(user_id: Optional[str]) -> tuple[HTTPStatus, bytes]:
@@ -175,7 +186,11 @@ async def send_role_greeting(user_id: str, text: str) -> None:
         await request.shutdown()
 
 
-async def select_role(user_id: Optional[str], role_id: Optional[int]) -> tuple[HTTPStatus, bytes]:
+async def select_role(
+    user_id: Optional[str],
+    role_id: Optional[int],
+    push_to_telegram: Optional[bool] = True,
+) -> tuple[HTTPStatus, bytes]:
     if not user_id:
         return build_json_response(
             ok=False,
@@ -207,16 +222,21 @@ async def select_role(user_id: Optional[str], role_id: Optional[int]) -> tuple[H
 
     greeting = selected_role.greeting_message or f"你好！我是 {selected_role.role_name}，很高兴认识你！"
     sent_greeting = False
+    should_push_to_telegram = _should_push_to_telegram(push_to_telegram)
     if history_count == 0:
         async with db_manager.async_session() as session:
             role_service = RoleService(session)
             chat_service = ChatService(session)
+            opening_group_seq = await chat_service.chat_repo.get_next_group_seq(user_id, selected_role.id)
+            opening_timestamp = chat_service._now_timestamp_ms()
             opening_image = await role_service.get_role_opening_image(selected_role.id)
             if opening_image:
                 await chat_service.save_assistant_image_message(
                     user_id=user_id,
                     role_id=selected_role.id,
                     image_url=opening_image.image_url,
+                    group_seq=opening_group_seq,
+                    timestamp=opening_timestamp,
                     meta_json={
                         "image_type": opening_image.image_type,
                         "stage_key": opening_image.stage_key,
@@ -228,13 +248,19 @@ async def select_role(user_id: Optional[str], role_id: Optional[int]) -> tuple[H
                 user_id=user_id,
                 role_id=selected_role.id,
                 content=greeting,
+                group_seq=opening_group_seq,
+                timestamp=opening_timestamp + 1,
             )
         try:
             await rag_service.index_chat_memory(greeting_message)
         except Exception:
             pass
-        await send_role_greeting(user_id, greeting)
-        sent_greeting = True
+        if should_push_to_telegram:
+            try:
+                await send_role_greeting(user_id, greeting)
+                sent_greeting = True
+            except Exception as exc:
+                logger.warning("发送 Telegram 开场白失败，已忽略: user_id=%s error=%s", user_id, exc)
 
     return build_json_response(
         ok=True,
@@ -378,6 +404,7 @@ async def send_chat_message(
 
 
 def _normalize_role_payload(payload: dict) -> tuple[Optional[dict], Optional[tuple[HTTPStatus, bytes]]]:
+    role_id = parse_optional_int(payload.get("role_id"))
     role_name = (payload.get("role_name") or payload.get("name") or "").strip()
     scenario = (payload.get("scenario") or payload.get("description") or "").strip() or None
     greeting_message = (payload.get("greeting_message") or "").strip() or None
@@ -441,9 +468,6 @@ def _normalize_role_payload(payload: dict) -> tuple[Optional[dict], Optional[tup
     normalized_prompts = RoleService.normalize_relationship_prompts(
         relationship_prompts=relationship_prompts,
         system_prompt=(payload.get("system_prompt") or "").strip(),
-        legacy_friend=(payload.get("system_prompt_friend") or "").strip(),
-        legacy_partner=(payload.get("system_prompt_partner") or "").strip(),
-        legacy_lover=(payload.get("system_prompt_lover") or "").strip(),
     )
     system_prompt = next(
         (
@@ -475,6 +499,7 @@ def _normalize_role_payload(payload: dict) -> tuple[Optional[dict], Optional[tup
         )
 
     return {
+        "role_id": role_id,
         "role_name": role_name,
         "system_prompt": system_prompt,
         "scenario": scenario,
@@ -503,6 +528,12 @@ async def admin_create_role(payload: dict) -> tuple[HTTPStatus, bytes]:
     normalized, error = _normalize_role_payload(payload)
     if error:
         return error
+    if not normalized.get("role_id"):
+        return build_json_response(
+            ok=False,
+            message="role_id 不能为空",
+            status=HTTPStatus.BAD_REQUEST,
+        )
 
     db_manager = get_db_manager()
     async with db_manager.async_session() as session:
@@ -512,6 +543,13 @@ async def admin_create_role(payload: dict) -> tuple[HTTPStatus, bytes]:
             return build_json_response(
                 ok=False,
                 message="角色名称已存在",
+                status=HTTPStatus.CONFLICT,
+            )
+        existing_role_id = await role_service.role_repo.get_by_role_id(normalized["role_id"])
+        if existing_role_id:
+            return build_json_response(
+                ok=False,
+                message="role_id 已存在",
                 status=HTTPStatus.CONFLICT,
             )
 
@@ -556,8 +594,27 @@ async def admin_update_role(role_id: Optional[int], payload: dict) -> tuple[HTTP
                 message="角色名称已存在",
                 status=HTTPStatus.CONFLICT,
             )
+        business_role_id = normalized.get("role_id") or role.role_id
+        existing_role_id = await role_service.role_repo.get_by_role_id(business_role_id)
+        if existing_role_id and existing_role_id.id != role_id:
+            return build_json_response(
+                ok=False,
+                message="role_id 已存在",
+                status=HTTPStatus.CONFLICT,
+            )
 
-        updated = await role_service.update_role(role_id, **normalized)
+        updated = await role_service.update_role(
+            role_id,
+            business_role_id=business_role_id,
+            role_name=normalized["role_name"],
+            system_prompt=normalized["system_prompt"],
+            scenario=normalized["scenario"],
+            greeting_message=normalized["greeting_message"],
+            avatar_url=normalized["avatar_url"],
+            tags=normalized["tags"],
+            relationship_prompts=normalized["relationship_prompts"],
+            is_active=normalized["is_active"],
+        )
         all_roles = await role_service.get_all_active_roles()
 
     await rag_service.rebuild_role_knowledge(all_roles)
@@ -626,9 +683,6 @@ async def admin_update_role_prompts(role_id: Optional[int], payload: dict) -> tu
     normalized_prompts = RoleService.normalize_relationship_prompts(
         relationship_prompts=relationship_prompts,
         system_prompt=(payload.get("system_prompt") or "").strip(),
-        legacy_friend=(payload.get("system_prompt_friend") or "").strip(),
-        legacy_partner=(payload.get("system_prompt_partner") or "").strip(),
-        legacy_lover=(payload.get("system_prompt_lover") or "").strip(),
     )
     friend_prompt = next(
         (

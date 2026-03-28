@@ -44,6 +44,7 @@ class UserRoleRepository(BaseRepository[UserRole]):
         user_id: str,
         role_id: int,
         *,
+        real_user_id: Optional[str] = None,
         is_current: Optional[bool] = None,
     ) -> UserRole:
         """确保用户-角色关系存在，relationship 仅作为兼容镜像保留。"""
@@ -52,6 +53,7 @@ class UserRoleRepository(BaseRepository[UserRole]):
         if not user_role:
             user_role = UserRole(
                 user_id=user_id,
+                real_user_id=real_user_id,
                 role_id=role_id,
                 relationship=DEFAULT_RELATIONSHIP,
                 is_current=bool(is_current) if is_current is not None else False,
@@ -64,13 +66,21 @@ class UserRoleRepository(BaseRepository[UserRole]):
 
         if is_current is not None:
             user_role.is_current = bool(is_current)
+        if real_user_id is not None:
+            user_role.real_user_id = real_user_id
         if not user_role.first_interaction_at:
             user_role.first_interaction_at = now
         user_role.last_interaction_at = now
         await self.session.flush()
         return user_role
 
-    async def set_current_role(self, user_id: str, role_id: int) -> UserRole:
+    async def set_current_role(
+        self,
+        user_id: str,
+        role_id: int,
+        *,
+        real_user_id: Optional[str] = None,
+    ) -> UserRole:
         """设置用户的当前角色"""
         # 先将用户的所有角色设为非当前
         result = await self.session.execute(
@@ -79,7 +89,12 @@ class UserRoleRepository(BaseRepository[UserRole]):
         for user_role in result.scalars().all():
             user_role.is_current = False
 
-        return await self.ensure_user_role(user_id, role_id, is_current=True)
+        return await self.ensure_user_role(
+            user_id,
+            role_id,
+            real_user_id=real_user_id,
+            is_current=True,
+        )
 
     async def update_relationship(
         self,

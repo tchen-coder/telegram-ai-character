@@ -4,7 +4,7 @@ services:
     container_name: telegram-ai-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: agentassitant2026@
       MYSQL_DATABASE: telegram_ai_character
       TZ: Asia/Shanghai
     ports:
@@ -15,7 +15,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ppassword"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pagentassitant2026@"]
       interval: 10s
       timeout: 5s
       retries: 10

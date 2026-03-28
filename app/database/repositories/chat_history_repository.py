@@ -1,7 +1,7 @@
 from typing import List, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, and_, desc, asc
+from sqlalchemy import delete, select, and_, desc, asc, func
 
 from app.database.models import ChatHistory, MessageType
 from app.database.repositories.base import BaseRepository
@@ -19,6 +19,8 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         role_id: int,
         message_type: MessageType,
         content: str,
+        group_seq: Optional[int] = None,
+        timestamp: Optional[int] = None,
         image_url: Optional[str] = None,
         emotion_data: Optional[dict] = None,
         decision_data: Optional[dict] = None,
@@ -28,6 +30,8 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         chat = ChatHistory(
             user_id=user_id,
             role_id=role_id,
+            group_seq=group_seq,
+            timestamp=timestamp or int(datetime.utcnow().timestamp() * 1000),
             message_type=message_type,
             content=content,
             image_url=image_url,
@@ -39,6 +43,15 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         await self.session.flush()
         return chat
 
+    async def get_next_group_seq(self, user_id: str, role_id: int) -> int:
+        result = await self.session.execute(
+            select(func.max(ChatHistory.group_seq)).where(
+                and_(ChatHistory.user_id == user_id, ChatHistory.role_id == role_id)
+            )
+        )
+        current_max = result.scalar_one_or_none()
+        return int(current_max or 0) + 1
+
     async def get_conversation_history(
         self, user_id: str, role_id: int, limit: int = 20
     ) -> List[ChatHistory]:
@@ -46,7 +59,7 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         result = await self.session.execute(
             select(ChatHistory)
             .where(and_(ChatHistory.user_id == user_id, ChatHistory.role_id == role_id))
-            .order_by(desc(ChatHistory.created_at), desc(ChatHistory.id))
+            .order_by(desc(ChatHistory.timestamp), desc(ChatHistory.id))
             .limit(limit)
         )
         messages = result.scalars().all()
@@ -59,7 +72,7 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         result = await self.session.execute(
             select(ChatHistory)
             .where(and_(ChatHistory.user_id == user_id, ChatHistory.role_id == role_id))
-            .order_by(desc(ChatHistory.created_at), desc(ChatHistory.id))
+            .order_by(desc(ChatHistory.timestamp), desc(ChatHistory.id))
             .limit(limit)
         )
         messages = result.scalars().all()
@@ -87,7 +100,7 @@ class ChatHistoryRepository(BaseRepository[ChatHistory]):
         result = await self.session.execute(
             select(ChatHistory)
             .where(and_(*conditions))
-            .order_by(asc(ChatHistory.created_at), asc(ChatHistory.id))
+            .order_by(asc(ChatHistory.timestamp), asc(ChatHistory.id))
             .limit(limit)
         )
         return result.scalars().all()

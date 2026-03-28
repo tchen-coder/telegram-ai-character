@@ -24,15 +24,9 @@ def build_relationship_prompt_lookup(role: Any) -> dict[int, str]:
             continue
         prompt_lookup[relationship] = prompt_text
 
-    legacy_lookup = {
-        1: clean_prompt_text(getattr(role, "system_prompt_friend", None))
-        or clean_prompt_text(getattr(role, "system_prompt", None)),
-        2: clean_prompt_text(getattr(role, "system_prompt_partner", None)),
-        3: clean_prompt_text(getattr(role, "system_prompt_lover", None)),
-    }
-    for relationship, prompt_text in legacy_lookup.items():
-        if prompt_text and relationship not in prompt_lookup:
-            prompt_lookup[relationship] = prompt_text
+    base_prompt = clean_prompt_text(getattr(role, "system_prompt", None))
+    if base_prompt and 1 not in prompt_lookup:
+        prompt_lookup[1] = base_prompt
 
     return prompt_lookup
 

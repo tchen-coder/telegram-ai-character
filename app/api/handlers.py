@@ -236,6 +236,7 @@ class BotAPIHandler(BaseHTTPRequestHandler):
                 select_role(
                     payload.get("user_id"),
                     parse_optional_int(payload.get("role_id")),
+                    payload.get("push_to_telegram"),
                 )
             )
             return
