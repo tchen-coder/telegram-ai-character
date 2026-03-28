@@ -1,1 +1,4 @@
 .env
+deploy/remote/env.api.local
+deploy/remote/env.app.local
+deploy/remote/env.bot.local

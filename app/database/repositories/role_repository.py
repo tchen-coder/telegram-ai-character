@@ -19,6 +19,12 @@ class RoleRepository(BaseRepository[Role]):
         )
         return result.scalars().first()
 
+    async def get_by_role_id(self, role_id: int) -> Optional[Role]:
+        result = await self.session.execute(
+            select(Role).where(Role.role_id == role_id)
+        )
+        return result.scalars().first()
+
     async def get_active_roles(self) -> List[Role]:
         """获取所有激活的角色"""
         result = await self.session.execute(

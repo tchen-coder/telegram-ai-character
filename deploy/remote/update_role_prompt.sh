@@ -39,17 +39,14 @@ fi
 case "${RELATIONSHIP_INPUT}" in
   1|friend)
     RELATIONSHIP=1
-    LEGACY_COLUMN="system_prompt_friend"
     SYNC_SYSTEM_PROMPT=1
     ;;
   2|partner)
     RELATIONSHIP=2
-    LEGACY_COLUMN="system_prompt_partner"
     SYNC_SYSTEM_PROMPT=0
     ;;
   3|lover)
     RELATIONSHIP=3
-    LEGACY_COLUMN="system_prompt_lover"
     SYNC_SYSTEM_PROMPT=0
     ;;
   *)
@@ -65,7 +62,7 @@ BACKUP_DIR="${BACKUP_DIR:-/opt/telegram-ai-character/backups}"
 mkdir -p "${BACKUP_DIR}"
 BACKUP_PATH="${BACKUP_DIR}/role_prompt_tables.$(date +%Y%m%d%H%M%S).sql"
 docker exec "${MYSQL_CONTAINER}" sh -c \
-  "exec mysqldump -uroot -ppassword --single-transaction --set-gtid-purged=OFF ${DB_NAME} roles role_relationship_prompts" \
+  "exec mysqldump -uroot -pagentassitant2026@ --single-transaction --set-gtid-purged=OFF ${DB_NAME} roles role_relationship_prompts" \
   > "${BACKUP_PATH}"
 
 PROMPT_B64="$(base64 < "${PROMPT_FILE}" | tr -d '\n')"
@@ -80,10 +77,9 @@ ON DUPLICATE KEY UPDATE
   is_active = TRUE,
   updated_at = UTC_TIMESTAMP();
 UPDATE roles
-SET ${LEGACY_COLUMN} = @prompt
-$(if [[ "${SYNC_SYSTEM_PROMPT}" == "1" ]]; then printf ', system_prompt = @prompt\n'; fi)
+SET system_prompt = IF(${SYNC_SYSTEM_PROMPT} = 1, @prompt, system_prompt)
 WHERE id = ${ROLE_ID};
-SELECT id, role_name, CHAR_LENGTH(${LEGACY_COLUMN}) AS prompt_len
+SELECT id, role_id, role_name, CHAR_LENGTH(system_prompt) AS system_prompt_len
 FROM roles
 WHERE id = ${ROLE_ID};
 SELECT role_id, relationship, CHAR_LENGTH(prompt_text) AS prompt_len, is_active
@@ -91,7 +87,7 @@ FROM role_relationship_prompts
 WHERE role_id = ${ROLE_ID} AND relationship = ${RELATIONSHIP};
 "
 
-docker exec -i "${MYSQL_CONTAINER}" mysql -uroot -ppassword <<EOF
+docker exec -i "${MYSQL_CONTAINER}" mysql -uroot -pagentassitant2026@ <<EOF
 ${SQL}
 EOF
 

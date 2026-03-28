@@ -8,15 +8,12 @@ from app.database.models import (
     Role,
     RoleImage,
     RoleRelationshipPrompt,
-    UserRoleRelationshipEvent,
-    UserRoleRelationshipState,
 )
 from app.database.repositories import (
     RoleImageRepository,
     RoleRelationshipPromptRepository,
     RoleRepository,
     UserRoleRepository,
-    UserRoleRelationshipStateRepository,
 )
 from app.models import RoleImageInfo, RoleInfo, RoleRelationshipPromptInfo
 from app.rag import rag_service
@@ -39,7 +36,6 @@ class RoleService:
         self.role_image_repo = RoleImageRepository(session)
         self.role_relationship_prompt_repo = RoleRelationshipPromptRepository(session)
         self.user_role_repo = UserRoleRepository(session)
-        self.user_role_relationship_state_repo = UserRoleRelationshipStateRepository(session)
 
     async def _resolve_user_relationship(
         self,
@@ -48,9 +44,9 @@ class RoleService:
         role_id: int,
         fallback: Optional[int] = None,
     ) -> int:
-        state = await self.user_role_relationship_state_repo.get_by_user_and_role(user_id, role_id)
-        if state:
-            return normalize_relationship(getattr(state, "current_stage", None))
+        user_role = await self.user_role_repo.get_user_role(user_id, role_id)
+        if user_role:
+            return normalize_relationship(getattr(user_role, "relationship", None))
         return normalize_relationship(fallback)
 
     @staticmethod
@@ -102,9 +98,6 @@ class RoleService:
         *,
         relationship_prompts: Optional[list[dict]] = None,
         system_prompt: Optional[str] = None,
-        legacy_friend: Optional[str] = None,
-        legacy_partner: Optional[str] = None,
-        legacy_lover: Optional[str] = None,
     ) -> list[dict]:
         normalized: dict[int, dict] = {}
         for item in relationship_prompts or []:
@@ -126,7 +119,6 @@ class RoleService:
 
         fallback_friend = (
             normalized.get(1, {}).get("prompt_text")
-            or cls._clean_prompt_text(legacy_friend)
             or cls._clean_prompt_text(system_prompt)
         )
         if fallback_friend:
@@ -138,20 +130,6 @@ class RoleService:
                 "prompt_text": fallback_friend,
                 "is_active": bool(normalized.get(1, {}).get("is_active", True)),
             }
-
-        legacy_map = {
-            2: cls._clean_prompt_text(legacy_partner),
-            3: cls._clean_prompt_text(legacy_lover),
-        }
-        for relationship, prompt_text in legacy_map.items():
-            if prompt_text and relationship not in normalized:
-                normalized[relationship] = {
-                    "relationship": relationship,
-                    "relationship_key": relationship_key(relationship),
-                    "relationship_label": relationship_label(relationship),
-                    "prompt_text": prompt_text,
-                    "is_active": True,
-                }
 
         return [
             normalized[relationship]
@@ -191,9 +169,6 @@ class RoleService:
                 if bool(prompt.is_active) and self._clean_prompt_text(prompt.prompt_text)
             ],
             system_prompt=role.system_prompt,
-            legacy_friend=role.system_prompt_friend,
-            legacy_partner=role.system_prompt_partner,
-            legacy_lover=role.system_prompt_lover,
         )
         relationship_prompt_infos = [
             RoleRelationshipPromptInfo(
@@ -218,11 +193,9 @@ class RoleService:
 
         return RoleInfo(
             id=role.id,
+            role_id=role.role_id,
             role_name=role.role_name,
             system_prompt=friend_prompt,
-            system_prompt_friend=friend_prompt,
-            system_prompt_partner=prompt_lookup.get(2) or None,
-            system_prompt_lover=prompt_lookup.get(3) or None,
             scenario=role.scenario,
             greeting_message=role.greeting_message,
             avatar_url=role.avatar_url,
@@ -362,18 +335,6 @@ class RoleService:
             return False
 
         await self.session.execute(
-            delete(UserRoleRelationshipEvent).where(
-                UserRoleRelationshipEvent.user_id == user_id,
-                UserRoleRelationshipEvent.role_id == role_id,
-            )
-        )
-        await self.session.execute(
-            delete(UserRoleRelationshipState).where(
-                UserRoleRelationshipState.user_id == user_id,
-                UserRoleRelationshipState.role_id == role_id,
-            )
-        )
-        await self.session.execute(
             delete(ChatHistory).where(
                 ChatHistory.user_id == user_id,
                 ChatHistory.role_id == role_id,
@@ -392,6 +353,7 @@ class RoleService:
     async def create_role(
         self,
         *,
+        role_id: int,
         role_name: str,
         system_prompt: str,
         scenario: Optional[str] = None,
@@ -413,21 +375,10 @@ class RoleService:
             ),
             self._clean_prompt_text(system_prompt),
         )
-        partner_prompt = next(
-            (item["prompt_text"] for item in normalized_prompts if item["relationship"] == 2),
-            None,
-        )
-        lover_prompt = next(
-            (item["prompt_text"] for item in normalized_prompts if item["relationship"] == 3),
-            None,
-        )
-
         role = Role(
+            role_id=role_id,
             role_name=role_name,
             system_prompt=friend_prompt,
-            system_prompt_friend=friend_prompt,
-            system_prompt_partner=partner_prompt,
-            system_prompt_lover=lover_prompt,
             scenario=scenario,
             greeting_message=greeting_message,
             avatar_url=avatar_url,
@@ -443,6 +394,7 @@ class RoleService:
         self,
         role_id: int,
         *,
+        business_role_id: Optional[int] = None,
         role_name: str,
         system_prompt: str,
         scenario: Optional[str] = None,
@@ -459,9 +411,6 @@ class RoleService:
         normalized_prompts = self.normalize_relationship_prompts(
             relationship_prompts=relationship_prompts,
             system_prompt=system_prompt,
-            legacy_friend=role.system_prompt_friend,
-            legacy_partner=role.system_prompt_partner,
-            legacy_lover=role.system_prompt_lover,
         )
         friend_prompt = next(
             (
@@ -471,20 +420,10 @@ class RoleService:
             ),
             self._clean_prompt_text(system_prompt),
         )
-        partner_prompt = next(
-            (item["prompt_text"] for item in normalized_prompts if item["relationship"] == 2),
-            None,
-        )
-        lover_prompt = next(
-            (item["prompt_text"] for item in normalized_prompts if item["relationship"] == 3),
-            None,
-        )
-
         role.role_name = role_name
+        if business_role_id is not None:
+            role.role_id = business_role_id
         role.system_prompt = friend_prompt
-        role.system_prompt_friend = friend_prompt
-        role.system_prompt_partner = partner_prompt
-        role.system_prompt_lover = lover_prompt
         role.scenario = scenario
         role.greeting_message = greeting_message
         role.avatar_url = avatar_url

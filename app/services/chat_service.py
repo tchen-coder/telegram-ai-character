@@ -14,6 +14,8 @@ class ChatMessage(BaseModel):
     id: int
     user_id: str
     role_id: int
+    group_seq: Optional[int] = None
+    timestamp: int
     message_type: str
     content: str
     image_url: Optional[str] = None
@@ -33,6 +35,10 @@ class ChatService:
         self.session = session
         self.chat_repo = ChatHistoryRepository(session)
 
+    @staticmethod
+    def _now_timestamp_ms() -> int:
+        return int(datetime.utcnow().timestamp() * 1000)
+
     async def save_user_message(
         self,
         user_id: str,
@@ -41,9 +47,13 @@ class ChatService:
         emotion_data: Optional[dict] = None,
     ) -> ChatMessage:
         """保存用户消息"""
+        timestamp = self._now_timestamp_ms()
+        group_seq = await self.chat_repo.get_next_group_seq(user_id, role_id)
         chat = await self.chat_repo.save_message(
             user_id=user_id,
             role_id=role_id,
+            group_seq=group_seq,
+            timestamp=timestamp,
             message_type=MessageType.USER,
             content=content,
             emotion_data=emotion_data,
@@ -56,12 +66,19 @@ class ChatService:
         user_id: str,
         role_id: int,
         content: str,
+        *,
+        group_seq: Optional[int] = None,
+        timestamp: Optional[int] = None,
         decision_data: Optional[dict] = None,
     ) -> ChatMessage:
         """保存 AI 回复消息"""
+        resolved_timestamp = timestamp or self._now_timestamp_ms()
+        resolved_group_seq = group_seq or await self.chat_repo.get_next_group_seq(user_id, role_id)
         chat = await self.chat_repo.save_message(
             user_id=user_id,
             role_id=role_id,
+            group_seq=resolved_group_seq,
+            timestamp=resolved_timestamp,
             message_type=MessageType.ASSISTANT,
             content=content,
             decision_data=decision_data,
@@ -76,12 +93,18 @@ class ChatService:
         image_url: str,
         *,
         content: str = "",
+        group_seq: Optional[int] = None,
+        timestamp: Optional[int] = None,
         meta_json: Optional[dict] = None,
         decision_data: Optional[dict] = None,
     ) -> ChatMessage:
+        resolved_timestamp = timestamp or self._now_timestamp_ms()
+        resolved_group_seq = group_seq or await self.chat_repo.get_next_group_seq(user_id, role_id)
         chat = await self.chat_repo.save_message(
             user_id=user_id,
             role_id=role_id,
+            group_seq=resolved_group_seq,
+            timestamp=resolved_timestamp,
             message_type=MessageType.ASSISTANT_IMAGE,
             content=content,
             image_url=image_url,
@@ -106,16 +129,21 @@ class ChatService:
         segments = dispatch_layer.split_message(content, split_level)
         saved_messages: List[ChatMessage] = []
         total = len(segments)
+        base_timestamp = self._now_timestamp_ms()
+        group_seq = await self.chat_repo.get_next_group_seq(user_id, role_id)
 
         for index, segment in enumerate(segments, start=1):
             segment_decision = copy.deepcopy(decision_data) if isinstance(decision_data, dict) else {}
             segment_decision["raw_response"] = content
             segment_decision["segment_index"] = index
             segment_decision["segment_total"] = total
+            segment_decision["group_seq"] = group_seq
 
             chat = await self.chat_repo.save_message(
                 user_id=user_id,
                 role_id=role_id,
+                group_seq=group_seq,
+                timestamp=base_timestamp + index - 1,
                 message_type=MessageType.ASSISTANT,
                 content=segment,
                 decision_data=segment_decision,
@@ -249,6 +277,8 @@ class ChatService:
                         id=synthetic_id,
                         user_id=message.user_id,
                         role_id=message.role_id,
+                        group_seq=message.group_seq,
+                        timestamp=message.timestamp,
                         message_type=message_type,
                         content=segment,
                         emotion_data=message.emotion_data,

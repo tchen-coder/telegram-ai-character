@@ -68,6 +68,7 @@ class DispatchTask(BaseModel):
 class RoleInfo(BaseModel):
     """角色信息模型"""
     id: int
+    role_id: int
     role_name: str
     system_prompt: str
     scenario: Optional[str] = None
@@ -77,9 +78,6 @@ class RoleInfo(BaseModel):
     tags: list[str] = Field(default_factory=list)
     relationship: int = DEFAULT_RELATIONSHIP
     relationship_label: str = "朋友"
-    system_prompt_friend: Optional[str] = None
-    system_prompt_partner: Optional[str] = None
-    system_prompt_lover: Optional[str] = None
     relationship_prompts: list[RoleRelationshipPromptInfo] = Field(default_factory=list)
     role_images: list[RoleImageInfo] = Field(default_factory=list)
     is_active: bool = True

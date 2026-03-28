@@ -28,9 +28,6 @@ def test_initial_rv_respects_existing_stage_floor():
 def test_select_relationship_prompt_prefers_stage_specific_prompt():
     role = SimpleNamespace(
         system_prompt="base-prompt",
-        system_prompt_friend="friend-legacy",
-        system_prompt_partner="partner-legacy",
-        system_prompt_lover="lover-legacy",
         relationship_prompts=[
             SimpleNamespace(relationship=1, prompt_text="friend-structured", is_active=True),
             SimpleNamespace(relationship=2, prompt_text="partner-structured", is_active=True),
@@ -43,9 +40,6 @@ def test_select_relationship_prompt_prefers_stage_specific_prompt():
 def test_select_relationship_prompt_falls_back_to_friend_prompt():
     role = SimpleNamespace(
         system_prompt="base-prompt",
-        system_prompt_friend="friend-legacy",
-        system_prompt_partner="",
-        system_prompt_lover="",
         relationship_prompts=[
             {"relationship": 1, "prompt_text": "friend-structured", "is_active": True},
         ],
@@ -97,20 +91,17 @@ def test_relationship_scorer_rewards_flirt_message():
 def test_relationship_service_upgrades_stage_with_thresholds():
     service = RelationshipService(None)
     config = SimpleNamespace(
-        max_negative_delta=3,
-        stage_floor_rv=[0, 40, 70],
+        max_positive_delta=15,
         stage_thresholds=[40, 70, 100],
     )
 
-    assert service._resolve_stage_after_update(  # noqa: SLF001
-        rv_before=38,
-        applied_delta=4,
-        stage_before=1,
+    assert service._resolve_next_relationship(  # noqa: SLF001
+        current_relationship=1,
+        score_result=SimpleNamespace(applied_delta=6),
         config=config,
     ) == 2
-    assert service._resolve_stage_after_update(  # noqa: SLF001
-        rv_before=68,
-        applied_delta=5,
-        stage_before=2,
+    assert service._resolve_next_relationship(  # noqa: SLF001
+        current_relationship=2,
+        score_result=SimpleNamespace(applied_delta=11),
         config=config,
     ) == 3
