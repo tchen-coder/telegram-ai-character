@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dispatch import dispatch_layer
 from app.database.models import ChatHistory, MessageType
 from app.database.repositories import ChatHistoryRepository
+from app.relationship_prompts import normalize_relationship
 
 
 class ChatMessage(BaseModel):
@@ -15,6 +16,7 @@ class ChatMessage(BaseModel):
     user_id: str
     role_id: int
     group_seq: Optional[int] = None
+    cur_relationship: int = 1
     timestamp: int
     message_type: str
     content: str
@@ -44,6 +46,7 @@ class ChatService:
         user_id: str,
         role_id: int,
         content: str,
+        cur_relationship: int = 1,
         emotion_data: Optional[dict] = None,
     ) -> ChatMessage:
         """保存用户消息"""
@@ -53,6 +56,7 @@ class ChatService:
             user_id=user_id,
             role_id=role_id,
             group_seq=group_seq,
+            cur_relationship=normalize_relationship(cur_relationship),
             timestamp=timestamp,
             message_type=MessageType.USER,
             content=content,
@@ -68,6 +72,7 @@ class ChatService:
         content: str,
         *,
         group_seq: Optional[int] = None,
+        cur_relationship: int = 1,
         timestamp: Optional[int] = None,
         decision_data: Optional[dict] = None,
     ) -> ChatMessage:
@@ -78,6 +83,7 @@ class ChatService:
             user_id=user_id,
             role_id=role_id,
             group_seq=resolved_group_seq,
+            cur_relationship=normalize_relationship(cur_relationship),
             timestamp=resolved_timestamp,
             message_type=MessageType.ASSISTANT,
             content=content,
@@ -94,6 +100,7 @@ class ChatService:
         *,
         content: str = "",
         group_seq: Optional[int] = None,
+        cur_relationship: int = 1,
         timestamp: Optional[int] = None,
         meta_json: Optional[dict] = None,
         decision_data: Optional[dict] = None,
@@ -104,6 +111,7 @@ class ChatService:
             user_id=user_id,
             role_id=role_id,
             group_seq=resolved_group_seq,
+            cur_relationship=normalize_relationship(cur_relationship),
             timestamp=resolved_timestamp,
             message_type=MessageType.ASSISTANT_IMAGE,
             content=content,
@@ -121,6 +129,7 @@ class ChatService:
         content: str,
         *,
         group_seq: Optional[int] = None,
+        cur_relationship: int = 1,
         decision_data: Optional[dict] = None,
     ) -> List[ChatMessage]:
         """按展示分段保存 AI 回复消息。"""
@@ -145,6 +154,7 @@ class ChatService:
                 user_id=user_id,
                 role_id=role_id,
                 group_seq=resolved_group_seq,
+                cur_relationship=normalize_relationship(cur_relationship),
                 timestamp=base_timestamp + index - 1,
                 message_type=MessageType.ASSISTANT,
                 content=segment,

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS `chat_history` (
   `user_id` VARCHAR(50) NOT NULL,
   `role_id` INT NOT NULL,
   `group_seq` INT,
+  `cur_relationship` INT NOT NULL DEFAULT 1,
   `timestamp` BIGINT NOT NULL,
   `message_type` ENUM('user', 'assistant', 'assistant_image') NOT NULL,
   `content` TEXT NOT NULL,

@@ -103,6 +103,8 @@ def serialize_message(message: Any) -> Dict[str, Any]:
         "role_id": getattr(message, "role_id", None),
         "user_id": getattr(message, "user_id", None),
         "group_seq": getattr(message, "group_seq", None),
+        "cur_relationship": normalize_relationship(getattr(message, "cur_relationship", 1)),
+        "cur_relationship_label": relationship_label(getattr(message, "cur_relationship", 1)),
         "timestamp": getattr(message, "timestamp", None),
         "message_type": message_type,
         "content": message.content,

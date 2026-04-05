@@ -148,6 +148,26 @@ class DatabaseManager:
             )
             if "group_seq" not in chat_columns:
                 sync_conn.execute(text("ALTER TABLE chat_history ADD COLUMN group_seq INT NULL"))
+            if "cur_relationship" not in chat_columns:
+                sync_conn.execute(
+                    text(
+                        "ALTER TABLE chat_history "
+                        "ADD COLUMN cur_relationship INT NULL DEFAULT 1"
+                    )
+                )
+                sync_conn.execute(
+                    text(
+                        "UPDATE chat_history "
+                        "SET cur_relationship = 1 "
+                        "WHERE cur_relationship IS NULL"
+                    )
+                )
+                sync_conn.execute(
+                    text(
+                        "ALTER TABLE chat_history "
+                        "MODIFY COLUMN cur_relationship INT NOT NULL DEFAULT 1"
+                    )
+                )
             if "timestamp" not in chat_columns:
                 sync_conn.execute(
                     text(

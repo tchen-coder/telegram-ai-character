@@ -302,6 +302,7 @@ async def select_role(
                     role_id=selected_role.id,
                     image_url=opening_image.image_url,
                     group_seq=opening_group_seq,
+                    cur_relationship=selected_role.relationship,
                     timestamp=opening_timestamp,
                     meta_json={
                         "image_type": opening_image.image_type,
@@ -315,6 +316,7 @@ async def select_role(
                 role_id=selected_role.id,
                 content=greeting,
                 group_seq=opening_group_seq,
+                cur_relationship=selected_role.relationship,
                 timestamp=opening_timestamp + 1,
             )
         try:
@@ -402,6 +404,7 @@ async def get_conversation_history(
                     user_id=user_id,
                     role_id=role_id,
                     image_url=opening_image.image_url,
+                    cur_relationship=role.relationship,
                     meta_json={
                         "image_type": opening_image.image_type,
                         "stage_key": opening_image.stage_key,

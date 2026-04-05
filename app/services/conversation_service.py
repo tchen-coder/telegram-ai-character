@@ -36,12 +36,17 @@ class ConversationService:
         current_role = await self._resolve_role(user_id, role_id)
         if not current_role:
             raise ValueError("请先选择一个角色。")
+        current_relationship = await self.role_service.get_user_role_relationship(
+            user_id=user_id,
+            role_id=current_role.id,
+        )
 
         emotion = await understanding_layer.analyze(user_text)
         user_message = await self.chat_service.save_user_message(
             user_id=user_id,
             role_id=current_role.id,
             content=user_text,
+            cur_relationship=current_relationship,
             emotion_data=emotion.model_dump(),
         )
         conversation_history = await self.chat_service.get_latest_messages(
@@ -93,6 +98,7 @@ class ConversationService:
             role_id=current_role.id,
             content=response_text,
             group_seq=user_message.group_seq,
+            cur_relationship=relationship_context.relationship,
             decision_data=decision.model_dump(),
         )
         for assistant_message in assistant_messages:

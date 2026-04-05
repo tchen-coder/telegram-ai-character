@@ -199,7 +199,7 @@ class RoleService:
             scenario=role.scenario,
             greeting_message=role.greeting_message,
             avatar_url=role.avatar_url,
-            opening_image_url=opening_image_url or role.avatar_url,
+            opening_image_url=opening_image_url,
             tags=self._normalize_tags(getattr(role, "tags", None)),
             relationship=DEFAULT_RELATIONSHIP,
             relationship_label=relationship_label(DEFAULT_RELATIONSHIP),
@@ -540,17 +540,4 @@ class RoleService:
         images = await self.role_image_repo.list_active_by_role(role_id, image_type="opening")
         if images:
             return self._serialize_role_image(images[0])
-        role = await self.role_repo.get_by_id(role_id)
-        if role and role.avatar_url:
-            return RoleImageInfo(
-                id=0,
-                role_id=role_id,
-                image_url=role.avatar_url,
-                image_type="avatar",
-                stage_key="fallback",
-                trigger_type="manual",
-                sort_order=0,
-                is_active=True,
-                meta_json={},
-            )
         return None

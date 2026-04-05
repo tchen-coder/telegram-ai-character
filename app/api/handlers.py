@@ -1,6 +1,7 @@
 import logging
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import unquote
 
 from app.api.requests import (
     authorize_admin,
@@ -29,6 +30,7 @@ from app.api.services import (
     select_role,
     send_chat_message,
 )
+from app.storage import cos_image_service
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,35 @@ class BotAPIHandler(BaseHTTPRequestHandler):
                     before_message_id=before_message_id,
                     limit=limit,
                 )
+            )
+            return
+
+        if parsed.path == "/api/media/cos":
+            object_key = unquote(get_query_param(self.path, "key") or "").strip()
+            if not object_key:
+                status, body = build_json_response(
+                    ok=False,
+                    message="缺少 key",
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                self._write_json(status, body)
+                return
+            try:
+                content, content_type = cos_image_service.get_object_bytes(object_key)
+            except Exception as exc:
+                logger.warning("读取 COS 图片失败: key=%s error=%s", object_key, exc)
+                status, body = build_json_response(
+                    ok=False,
+                    message="图片不存在或读取失败",
+                    status=HTTPStatus.NOT_FOUND,
+                )
+                self._write_json(status, body)
+                return
+            self._write_bytes(
+                HTTPStatus.OK,
+                content,
+                content_type=content_type,
+                cache_control="public, max-age=600",
             )
             return
 
@@ -313,5 +344,20 @@ class BotAPIHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _write_bytes(
+        self,
+        status: HTTPStatus,
+        body: bytes,
+        *,
+        content_type: str,
+        cache_control: str = "no-store",
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)

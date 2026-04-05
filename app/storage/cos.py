@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from urllib.parse import quote
 from urllib.parse import urlparse
 
 from qcloud_cos import CosConfig, CosS3Client
@@ -44,6 +45,13 @@ class COSImageService:
             return parsed.path.lstrip("/")
         return None
 
+    def to_proxy_url(self, image_url: str | None, meta_json: dict | None = None) -> str | None:
+        object_key = self._extract_object_key(image_url, meta_json)
+        if not object_key:
+            raw = str(image_url or "").strip()
+            return raw or None
+        return "/api/media/cos?key=" + quote(object_key, safe="")
+
     def sign_image_url(self, image_url: str | None, meta_json: dict | None = None) -> str | None:
         raw = str(image_url or "").strip()
         if not raw:
@@ -55,13 +63,21 @@ class COSImageService:
         object_key = self._extract_object_key(raw, meta_json)
         if not object_key:
             return raw
+        return self.to_proxy_url(raw, meta_json)
 
+    def get_object_bytes(self, object_key: str) -> tuple[bytes, str]:
         settings = get_settings()
-        return self._client().get_presigned_download_url(
+        response = self._client().get_object(
             Bucket=settings.cos_bucket,
-            Key=object_key,
-            Expired=settings.cos_sign_expire,
+            Key=object_key.lstrip("/"),
         )
+        body = response["Body"].get_raw_stream().read()
+        content_type = (
+            response.get("Content-Type")
+            or response.get("content-type")
+            or "application/octet-stream"
+        )
+        return body, str(content_type)
 
 
 cos_image_service = COSImageService()

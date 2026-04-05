@@ -160,6 +160,7 @@ class ChatHistory(Base):
     user_id = Column(String(50), nullable=False)
     role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
     group_seq = Column(Integer, nullable=True)
+    cur_relationship = Column(Integer, nullable=False, default=1)
     timestamp = Column(BigInteger, nullable=False, default=lambda: int(datetime.utcnow().timestamp() * 1000))
     message_type = Column(Enum(MessageType), nullable=False)
     content = Column(Text, nullable=False)
